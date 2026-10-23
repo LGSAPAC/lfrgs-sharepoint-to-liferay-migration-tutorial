@@ -38,18 +38,18 @@ class LiferayClient:
 
     # ------------------------------------------------------------------ core
     def call(self, method: str, path: str, body: Any = None, *, files=None, data=None,
-             ok404: bool = False, write: bool | None = None) -> Any:
+             ok404: bool = False, write: bool | None = None, params: dict | None = None) -> Any:
         is_write = write if write is not None else method != "GET"
         if self.dry_run and is_write:
             self._fake_id += 1
             with self._dry_log.open("a") as fh:
-                fh.write(json.dumps({"method": method, "path": path, "body": body, "data": data,
+                fh.write(json.dumps({"method": method, "path": path, "params": params, "body": body, "data": data,
                                      "files": list(files) if files else None}, default=str) + "\n")
             return {"id": self._fake_id, "externalReferenceCode": (body or {}).get("externalReferenceCode")
                     if isinstance(body, dict) else None, "_dryRun": True}
         for attempt in range(5):
             r = self.http.request(method, path, json=body if files is None and data is None else None,
-                                  files=files, data=data, headers={"Accept": "application/json"})
+                                  files=files, data=data, params=params, headers={"Accept": "application/json"})
             if r.status_code in (429, 502, 503, 504):
                 time.sleep(2 ** attempt)
                 continue
@@ -196,3 +196,46 @@ class LiferayClient:
                                  {"name": name, "navigationMenuItems": items})
         return self.call("POST", f"/o/headless-delivery/v1.0/sites/{site_id}/navigation-menus",
                          {"name": name, "navigationMenuItems": items})
+
+    # -------------------------------------------------------------- taxonomy
+    def vocabulary(self, site_id: int, erc: str) -> dict | None:
+        return self.get(f"/o/headless-admin-taxonomy/v1.0/sites/{site_id}/taxonomy-vocabularies/by-external-reference-code/{erc}")
+
+    def create_vocabulary(self, site_id: int, erc: str, name: str) -> dict:
+        return self.call("POST", f"/o/headless-admin-taxonomy/v1.0/sites/{site_id}/taxonomy-vocabularies",
+                         {"externalReferenceCode": erc, "name": name, "name_i18n": {self.settings.locale: name}})
+
+    def category(self, vocabulary_id: int, erc: str) -> dict | None:
+        return self.get(f"/o/headless-admin-taxonomy/v1.0/taxonomy-vocabularies/{vocabulary_id}"
+                        f"/taxonomy-categories/by-external-reference-code/{erc}")
+
+    def create_category(self, vocabulary_id: int, parent_id: int | None, erc: str, name: str) -> dict:
+        path = (f"/o/headless-admin-taxonomy/v1.0/taxonomy-categories/{parent_id}/taxonomy-categories" if parent_id
+                else f"/o/headless-admin-taxonomy/v1.0/taxonomy-vocabularies/{vocabulary_id}/taxonomy-categories")
+        return self.call("POST", path, {"externalReferenceCode": erc, "name": name[:75],
+                                        "name_i18n": {self.settings.locale: name[:75]}})
+
+    # ------------------------------------------------------ documents & media
+    def create_folder(self, site_id: int, parent_id: int | None, erc: str, name: str, params: dict | None = None) -> dict:
+        path = (f"/o/headless-delivery/v1.0/document-folders/{parent_id}/document-folders" if parent_id
+                else f"/o/headless-delivery/v1.0/sites/{site_id}/document-folders")
+        return self.call("POST", path, {"externalReferenceCode": erc, "name": name}, params=params)
+
+    def create_document(self, folder_id: int, local_path: str, document: dict, params: dict | None = None) -> dict:
+        with open(local_path, "rb") as fh:
+            return self.call("POST", f"/o/headless-delivery/v1.0/document-folders/{folder_id}/documents",
+                             files={"file": (Path(local_path).name, fh)},
+                             data={"document": json.dumps(document)}, params=params)
+
+    def create_document_type(self, site_id: int, data_definition: dict) -> dict:
+        """Document Type = data-engine definition with content type document-library."""
+        return self.call("POST", f"/o/data-engine/v2.0/sites/{site_id}/data-definitions/by-content-type/document-library",
+                         data_definition)
+
+    def document_type_by_key(self, site_id: int, key: str) -> dict | None:
+        return self.get(f"/o/data-engine/v2.0/sites/{site_id}/data-definitions/by-content-type/document-library"
+                        f"/by-data-definition-key/{key}")
+
+    # ----------------------------------------------------------------- blogs
+    def create_blog_posting(self, site_id: int, body: dict, params: dict | None = None) -> dict:
+        return self.call("POST", f"/o/headless-delivery/v1.0/sites/{site_id}/blog-postings", body, params=params)

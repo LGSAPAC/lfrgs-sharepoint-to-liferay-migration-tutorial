@@ -12,12 +12,17 @@ from pathlib import Path
 
 import yaml
 
+from . import libraries as libs
+from . import taxonomy as tx
 from . import transform as t
 from .sharepoint import parse_login
 
 
-def _read(root: Path, name: str):
-    return json.loads((root / name).read_text())
+def _read(root: Path, name: str, default=None):
+    path = root / name
+    if not path.exists() and default is not None:
+        return default  # extracts made before a feature existed
+    return json.loads(path.read_text())
 
 
 def load_mapping(path: str | Path | None) -> dict:
@@ -42,6 +47,8 @@ def build_plan(out: Path, mapping: dict) -> dict:
     lists = _read(root, "lists.json")
     pages = _read(root, "pages.json")
     perms = _read(root, "permissions.json")
+    libraries = _read(root, "libraries.json", [])
+    termsets = _read(root, "termsets.json", {})
 
     web = site["web"]
     sp_path = web["ServerRelativeUrl"].rstrip("/")
@@ -51,6 +58,8 @@ def build_plan(out: Path, mapping: dict) -> dict:
     locale = (mapping.get("locale") or "en_US")
     levels = {**t.DEFAULT_LEVEL_MAP, **((mapping.get("permissions") or {}).get("levels") or {})}
     report: dict[str, list] = {"warnings": [], "manual": []}
+    acfg = mapping.get("audit") or {}
+    audit = {"fields": acfg.get("fields", True), "impersonate": acfg.get("impersonate", False)}
 
     # ------------------------------------------------------------- users
     ucfg = mapping.get("users") or {}
@@ -153,7 +162,7 @@ def build_plan(out: Path, mapping: dict) -> dict:
             decided_by = "auto"
         else:
             decided_by = "mapping.yaml" if "target" in ov else "lists.target"
-        lp = t.plan_list(info, fields, max_att, target, ov)
+        lp = t.plan_list(info, fields, max_att, target, {**ov, "audit": audit["fields"]})
         lp["classification"] = {**classification, "decidedBy": decided_by}
 
         title = info["Title"]
@@ -198,11 +207,11 @@ def build_plan(out: Path, mapping: dict) -> dict:
             level = t.strongest_level(ra.get("RoleDefinitionBindings", []))
             if p and level and level in t.LEVEL_ENTRY_ACTIONS:
                 p["needsRole"] = True
-                # CMS entries live in the Space (depot role); Objects live in the site (site role)
+                # CMS entries live in the Space (depot role); everything else lives in the site (site role)
                 scopes = p.setdefault("roleScopes", [])
-                if target not in scopes:
-                    scopes.append(target)
-                out.append({"principal": p["erc"], "actions": t.LEVEL_ENTRY_ACTIONS[level]})
+                if t.role_scope(target) not in scopes:
+                    scopes.append(t.role_scope(target))
+                out.append({"principal": p["erc"], "level": level, "actions": t.LEVEL_ENTRY_ACTIONS[level]})
         return out
 
     for lp in plan_lists:
@@ -212,14 +221,103 @@ def build_plan(out: Path, mapping: dict) -> dict:
         if list_level is not None or item_level:
             entry_grants[lid] = {"list": list_level, "items": item_level}
 
+    # ------------------------------------------------------------- libraries
+    libcfg = mapping.get("libraries") or {}
+    lib_skip = set(libcfg.get("skip", []))
+    plan_libs = []
+    for entry in libraries:
+        info = entry["list"]
+        if info["Title"] in lib_skip:
+            report["warnings"].append(f"Library '{info['Title']}' skipped by mapping.yaml")
+            continue
+        items = json.loads((root / "libraries" / f"{info['Id']}.items.json").read_text())
+        lib = libs.plan_library(entry, items, perms, audit["fields"])
+        lib["metadataStrategy"] = libcfg.get("metadata", "documentType")
+        grants = {}
+        if info["Id"] in perms["lists"]:
+            grants["library"] = grants_for(perms["lists"][info["Id"]], "site")
+        for iid, ras in perms["items"].get(info["Id"], {}).items():
+            grants[iid] = grants_for(ras, "site")
+        lib["grants"] = grants
+        lib["itemCount"] = len(items)
+        for sk in lib["skippedFiles"]:
+            report["warnings"].append(f"Library '{info['Title']}': file not migrated: {sk}")
+        for col in lib["documentType"]["skipped"]:
+            report["warnings"].append(f"Library '{info['Title']}': column {col} not migrated")
+        if lib["moderation"]:
+            report["manual"].append(f"Library '{info['Title']}' uses content approval: enable a workflow for "
+                                    "Documents and Media in Site Settings > Workflow (or on the folder)")
+        if lib["versioning"]:
+            report["warnings"].append(f"Library '{info['Title']}': only the current version of each file is migrated")
+        plan_libs.append(lib)
+
+    # -------------------------------------------------------------- taxonomy
+    tcfg = mapping.get("taxonomy") or {}
+    sources = []
+    for lp in plan_lists:
+        if lp["taxonomyFields"]:
+            sources.append((lp, json.loads((root / "lists" / f"{lp['listId']}.items.json").read_text())))
+    for lib in plan_libs:
+        if lib["taxonomyFields"]:
+            sources.append((lib, json.loads((root / "libraries" / f"{lib['libraryId']}.items.json").read_text())))
+    vocabularies, tax_warnings = tx.plan_vocabularies(termsets, sources)
+    report["warnings"] += tax_warnings
+
+    # ----------------------------------------------------------------- news
+    ncfg = mapping.get("news") or {}
+    news_target = ncfg.get("target", "blogs")
+    news_pages = [p for p in pages if t.is_news(p)]
+    news: dict = {"target": news_target, "posts": []}
+    if news_pages and news_target == "blogs":
+        for p in news_pages:
+            li = p.get("_listItem") or {}
+            news["posts"].append({
+                "pageId": p["id"], "erc": f"sp-news-{p['id']}", "headline": p.get("title") or p["name"],
+                "description": p.get("description") or "", "friendlyUrlPath": t.slugify(p["name"]),
+                "datePublished": t.iso_utc(li.get("FirstPublishedDate") or li.get("Created") or p.get("createdDateTime")),
+                "authorEmail": ((li.get("Author") or {}).get("EMail") or "").lower()})
+        if not audit["impersonate"]:
+            report["manual"].append("News posts are authored by the migration user; enable audit.impersonate "
+                                    "or edit the author in Blogs if the byline matters")
+    elif news_pages and news_target == "structure":
+        news_id = f"news-{web.get('Id', 'site')}"
+        info = {"Id": news_id, "Title": ncfg.get("structureName", "News"), "ItemCount": len(news_pages)}
+        nfields = [
+            {"Id": f"{news_id}-title", "InternalName": "Title", "Title": "Title", "TypeAsString": "Text", "Required": True},
+            {"Id": f"{news_id}-summary", "InternalName": "Description", "Title": "Summary", "TypeAsString": "Note"},
+            {"Id": f"{news_id}-body", "InternalName": "Body", "Title": "Body", "TypeAsString": "Note", "RichText": True},
+            {"Id": f"{news_id}-published", "InternalName": "FirstPublishedDate", "Title": "Published",
+             "TypeAsString": "DateTime", "DisplayFormat": 1},
+        ]
+        nitems = []
+        for i, p in enumerate(news_pages, 1):
+            li = p.get("_listItem") or {}
+            nitems.append({"Id": li.get("Id") or i, "Title": p.get("title") or p["name"],
+                           "Description": p.get("description") or "", "Body": "", "_pageId": p["id"],
+                           "FirstPublishedDate": li.get("FirstPublishedDate") or li.get("Created"),
+                           "Created": li.get("Created"), "Modified": li.get("Modified"),
+                           "Author": li.get("Author"), "Editor": li.get("Editor")})
+        (root / "lists").mkdir(parents=True, exist_ok=True)
+        (root / "lists" / f"{news_id}.items.json").write_text(json.dumps(nitems, indent=2))
+        lp = t.plan_list(info, nfields, 0, "cms", {"audit": audit["fields"], "name": "News"})
+        lp.update({"news": True, "itemCount": len(nitems), "objectViews": [],
+                   "classification": {"target": "cms", "reasons": ["SharePoint news posts"], "decidedBy": "news.target"}})
+        plan_lists.append(lp)
+        news["listId"] = news_id
+
     # ----------------------------------------------------------------- pages
     pcfg = mapping.get("pages") or {}
     skip_pages = set(pcfg.get("skip", []))
     lr_prefix = f"/web/{site_key}"
     links = t.page_link_map(pages, sp_path, lr_prefix)
+    for post in news["posts"]:
+        page = next(p for p in pages if p["id"] == post["pageId"])
+        for k in [k for k, v in links.items() if v == f"{lr_prefix}/{t.slugify(page['name'])}"]:
+            links[k] = f"{lr_prefix}/-/blogs/{post['friendlyUrlPath']}"
+    news["links"] = links
     plan_pages = []
     for p in pages:
-        if p.get("name") in skip_pages:
+        if p.get("name") in skip_pages or (t.is_news(p) and news_target != "pages"):
             continue
         unmigrated = []
         _, unmigrated = t.page_to_site_page(p, locale, {}, links)
@@ -245,6 +343,11 @@ def build_plan(out: Path, mapping: dict) -> dict:
         "lists": plan_lists,
         "entryGrants": entry_grants,
         "pages": plan_pages,
+        "libraries": plan_libs,
+        "vocabularies": vocabularies,
+        "taxonomy": {"scope": tcfg.get("scope", "global")},
+        "news": news,
+        "audit": audit,
         "navigation": {"menuName": pcfg.get("navigationMenuName", "SharePoint Navigation")},
         "report": report,
     }
@@ -260,7 +363,11 @@ def render_plan_md(plan: dict) -> str:
              f"- Users: {len(plan['users'])}",
              f"- User groups / principals: {len(plan['principals'])}",
              f"- Lists -> structures: {len(plan['lists'])}",
-             f"- Pages: {len(plan['pages'])}", "", "## Site-level permissions", "",
+             f"- Pages: {len(plan['pages'])}",
+             f"- Document libraries: {len(plan.get('libraries', []))} "
+             f"({sum(len(l['documents']) for l in plan.get('libraries', []))} files)",
+             f"- Vocabularies: {len(plan.get('vocabularies', []))}",
+             f"- News posts: {len((plan.get('news') or {}).get('posts', []))}", "", "## Site-level permissions", "",
              "| Principal | SharePoint level | Liferay site role | Liferay space role |", "|---|---|---|---|"]
     names = {p["erc"]: p["name"] for p in plan["principals"]}
     for g in plan["siteGrants"]:
@@ -280,11 +387,44 @@ def render_plan_md(plan: dict) -> str:
             lines += ["Object views: " + ", ".join(v["name"][next(iter(v["name"]))] for v in lp["objectViews"]), ""]
         lines += ["| SharePoint column | Type | Liferay field | Business type |", "|---|---|---|---|"]
         for m in lp["fields"]:
-            bt = m["objectField"]["businessType"] if m["objectField"] else ("Relationship (many-to-many)" if m["lookup"]["multi"] else "Relationship (one-to-many)")
+            if m["objectField"]:
+                bt = m["objectField"]["businessType"]
+            elif m.get("taxonomy"):
+                bt = "Categories (taxonomyCategoryIds)"
+            else:
+                bt = "Relationship (many-to-many)" if m["lookup"]["multi"] else "Relationship (one-to-many)"
             lines.append(f"| {m['sp']} | {m['kind']} | `{m['name']}` | {bt} |")
         for a in lp["attachmentFields"]:
             lines.append(f"| Attachments | Attachments | `{a}` | Attachment |")
         lines.append("")
+    if plan.get("libraries"):
+        lines += ["## Document libraries -> Documents and Media", "",
+                  "| Library | Folders | Files | Document type fields | Categories from | Unique permission scopes |",
+                  "|---|---|---|---|---|---|"]
+        for lib in plan["libraries"]:
+            lines.append(f"| {lib['title']} | {len(lib['folders'])} | {len(lib['documents'])} | "
+                         f"{', '.join(m['name'] for m in lib['documentType']['fields']) or '-'} | "
+                         f"{', '.join(tf['label'] for tf in lib['taxonomyFields']) or '-'} | {len(lib['grants'])} |")
+        lines.append("")
+    if plan.get("vocabularies"):
+        lines += [f"## Managed metadata -> categories ({plan['taxonomy']['scope']} scope)", "",
+                  "| Term set -> vocabulary | Categories | Source |", "|---|---|---|"]
+        for v in plan["vocabularies"]:
+            lines.append(f"| {v['name']} | {len(v['categories'])} | "
+                         f"{'values on items' if v['fromItemsOnly'] else 'term store'} |")
+        lines.append("")
+    news = plan.get("news") or {}
+    if news.get("posts") or news.get("listId"):
+        lines += [f"## News -> {news['target']}", ""]
+        for post in news.get("posts", []):
+            lines.append(f"- {post['headline']} -> `/-/blogs/{post['friendlyUrlPath']}` ({post['datePublished']})")
+        if news.get("listId"):
+            lines.append("- News posts become entries of the CMS structure `News`")
+        lines.append("")
+    a = plan.get("audit") or {}
+    lines += ["## Created / Modified / Author", "",
+              f"- Audit fields (spCreated, spModified, spCreatedBy, spModifiedBy): {'yes' if a.get('fields') else 'no'}",
+              f"- Impersonate original authors (doAsUserId): {'yes' if a.get('impersonate') else 'no'}", ""]
     lines += ["## Pages", "", "| SharePoint page | Liferay URL | Unmigrated web parts |", "|---|---|---|"]
     for p in plan["pages"]:
         lines.append(f"| {p['name']} | `/web/{plan['site']['key']}{p['friendlyUrlPath']}` | {', '.join(p['unmigratedWebParts']) or '-'} |")

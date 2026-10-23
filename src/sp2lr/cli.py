@@ -27,6 +27,8 @@ def main(argv: list[str] | None = None) -> None:
 
     ex = sub.add_parser("extract", help="extract the SharePoint site")
     ex.add_argument("--no-attachments", action="store_true", help="skip downloading list item attachments")
+    ex.add_argument("--no-libraries", action="store_true", help="skip document libraries")
+    ex.add_argument("--max-file-mb", type=int, default=250, help="skip library files larger than this (default 250)")
 
     pl = sub.add_parser("plan", help="build the migration plan")
     pl.add_argument("--mapping", default="mapping.yaml")
@@ -52,7 +54,8 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "extract":
         from .extract import extract
         from .sharepoint import SharePointClient
-        summary = extract(SharePointClient(sharepoint_settings()), out, with_attachments=not args.no_attachments)
+        summary = extract(SharePointClient(sharepoint_settings()), out, with_attachments=not args.no_attachments,
+                          with_libraries=not args.no_libraries, max_file_mb=args.max_file_mb)
         print(json.dumps(summary, indent=2))
     elif args.cmd == "plan":
         from .plan import build_plan, load_mapping

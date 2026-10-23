@@ -1,10 +1,10 @@
-# 7. Pages
+# 9. Pages and news
 
 ```bash
-sp2lr load --phase pages
+sp2lr load --phase pages --phase news
 ```
 
-## 7.1 How a modern page maps to a content page
+## 9.1 How a modern page maps to a content page
 
 A SharePoint modern page is a **canvas**: horizontal sections, each with a layout and 1–3 columns,
 each column holding web parts, plus an optional vertical section. A Liferay content page is a
@@ -33,7 +33,7 @@ verticalSection                        ──►   Section (Fixed) at the end
 
 Graph returns each column's `width` directly. The table above is only a fallback.
 
-## 7.2 Web parts
+## 9.2 Web parts
 
 | Web part | Result |
 |---|---|
@@ -52,7 +52,7 @@ Suggested Liferay replacements for the common ones:
 | Events | A content structure `Event` + Collection Display filtered by date |
 | Embed | *HTML* fragment (with care) or a Remote App |
 
-## 7.3 The API call
+## 9.3 The API call
 
 ```json
 POST /o/headless-delivery/v1.0/sites/{siteId}/site-pages
@@ -83,7 +83,7 @@ POST /o/headless-delivery/v1.0/sites/{siteId}/site-pages
 * **Images**: uploaded with `POST /o/headless-delivery/v1.0/document-folders/{id}/documents`, and the
   `contentUrl` replaces the SharePoint URL.
 
-## 7.4 Navigation
+## 9.4 Navigation
 
 Quick Launch (or Top navigation, if Quick Launch is empty) becomes a navigation menu called
 *SharePoint Navigation*, with nested items and rewritten URLs:
@@ -96,11 +96,43 @@ POST /o/headless-delivery/v1.0/sites/{siteId}/navigation-menus
 **Manual steps:** mark the menu as *Primary Navigation* (*Site Builder → Navigation Menus*) and move
 the migrated home page to first position (*Site Builder → Pages*).
 
-## 7.5 Visual check
+## 9.5 News posts
+
+SharePoint news is a modern page with `promotionKind = newsPost`. In Liferay, news belongs in
+**Blogs** or in a **News** content structure, not in the page tree. Choose in `mapping.yaml`:
+
+```yaml
+news:
+  target: blogs        # blogs | structure | pages
+  structureName: News  # only for target: structure
+```
+
+| `news.target` | Result | Good for |
+|---|---|---|
+| `blogs` (default) | One **blog posting** per news post in the site | Classic intranet news with RSS, comments, the Blogs widget |
+| `structure` | Entries of a `News` **CMS content structure** in the Space (title, summary, rich-text body, published date + audit fields) | Headless or multi-site news, Collection Display, display page templates |
+| `pages` | Migrated as ordinary content pages | Keeping the old behaviour |
+
+The page canvas is flattened into one HTML body, with text web parts in order and images uploaded
+and rewritten. The original **first-published date** is kept:
+
+```json
+POST /o/headless-delivery/v1.0/sites/{siteId}/blog-postings
+{ "externalReferenceCode": "sp-news-6d3e…", "headline": "Q3 results are in",
+  "alternativeHeadline": "Record quarter", "description": "Record quarter",
+  "articleBody": "<p>Revenue up 20%</p>", "friendlyUrlPath": "q3-results",
+  "datePublished": "2026-09-30T07:00:00Z" }
+```
+
+Links to news pages from other pages and navigation are rewritten to
+`/web/<site>/-/blogs/<slug>`. The blog author is the migration user unless
+`audit.impersonate: true` is set ([Chapter 4](04-mapping-and-plan.md#45-created-modified-and-author)).
+
+## 9.6 Visual check
 
 > With the liferay MCP server, list the site pages of site "marketing" (fields: title, friendlyUrlPath).
 > For each, compare with the SharePoint page from `list_site_pages`. Then fetch the page definition of
 > "/about-us" and the SharePoint canvas of About-Us.aspx and confirm that the section and column
 > structure and the text match.
 
-Next: [8. Permissions](08-permissions.md)
+Next: [10. Permissions](10-permissions.md)

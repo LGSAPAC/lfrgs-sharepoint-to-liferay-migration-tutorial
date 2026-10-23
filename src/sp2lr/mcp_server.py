@@ -20,7 +20,7 @@ except ImportError:  # SDK 1.x
 
 from .auth import TokenProvider
 from .config import sharepoint_settings
-from .sharepoint import SharePointClient, SUPPORTED_FIELD_TYPES, parse_login
+from .sharepoint import SYSTEM_LIBRARIES, SharePointClient, SUPPORTED_FIELD_TYPES, parse_login
 
 mcp = MCPServer(
     "sharepoint",
@@ -67,6 +67,7 @@ def inventory_site() -> str:
     lists = c.list_lists()
     custom = [l for l in lists if l["BaseTemplate"] == 100]
     findings: list[str] = []
+    taxonomy_cols: list[str] = []
     list_summ = []
     for l in custom:
         fields = c.list_fields(l["Id"])
@@ -76,23 +77,37 @@ def inventory_site() -> str:
             findings.append(f"List '{l['Title']}' has unsupported columns: {', '.join(unsupported)}")
         if l.get("HasUniqueRoleAssignments"):
             findings.append(f"List '{l['Title']}' has unique (broken-inheritance) permissions")
+        taxonomy_cols += [f"{l['Title']}.{f.get('Title')}" for f in fields if f["TypeAsString"].startswith("Taxonomy")]
         list_summ.append({"title": l["Title"], "id": l["Id"], "items": l["ItemCount"],
                           "columns": len(fields), "uniquePermissions": l.get("HasUniqueRoleAssignments")})
-    libraries = [l["Title"] for l in lists if l["BaseTemplate"] == 101]
-    if libraries:
-        findings.append(f"Document libraries are not migrated by this tutorial: {', '.join(libraries)}")
+    libraries = [l for l in lists if l["BaseTemplate"] == 101 and l["Title"] not in SYSTEM_LIBRARIES
+                 and not l.get("IsSystemList") and not l.get("IsCatalog")]
+    lib_summ = []
+    for l in libraries:
+        fields = c.list_fields(l["Id"])
+        taxonomy_cols += [f"{l['Title']}.{f.get('Title')}" for f in fields if f["TypeAsString"].startswith("Taxonomy")]
+        lib_summ.append({"title": l["Title"], "id": l["Id"], "items": l["ItemCount"],
+                         "metadataColumns": [f.get("Title") for f in fields if f["InternalName"] not in ("Title",)],
+                         "uniquePermissions": l.get("HasUniqueRoleAssignments"),
+                         "contentApproval": l.get("EnableModeration")})
+    if taxonomy_cols:
+        findings.append(f"Managed metadata columns (-> categories): {', '.join(taxonomy_cols)}")
     other = [f"{l['Title']} (template {l['BaseTemplate']})" for l in lists if l["BaseTemplate"] not in (100, 101, 119)]
     if other:
         findings.append(f"Non-custom lists (tasks, calendars, ...) need review: {', '.join(other)}")
     pages = c.list_pages()
+    news = [p for p in pages if p.get("promotionKind") == "newsPost"]
     groups = c.site_groups()
     users = [u for u in c.site_users() if u["PrincipalType"] == 1 and u.get("Email")]
     return _dump({
         "web": c.web(),
         "counts": {"pages": len(pages), "customLists": len(custom),
                    "listItems": sum(l["ItemCount"] for l in custom),
+                   "documentLibraries": len(libraries), "libraryItems": sum(l["ItemCount"] for l in libraries),
+                   "newsPosts": len(news),
                    "sharePointGroups": len(groups), "users": len(users)},
         "lists": list_summ,
+        "libraries": lib_summ,
         "pages": [{"title": p.get("title"), "name": p.get("name"), "layout": p.get("pageLayout")} for p in pages],
         "groups": [{"title": g["Title"], "members": len(g.get("Users", [])), "associatedAs": g.get("associatedAs")} for g in groups],
         "findings": findings,
@@ -146,6 +161,26 @@ def get_list_items(list_id: str, limit: int = 50) -> str:
         if len(out) >= limit:
             break
     return _dump(out)
+
+
+@mcp.tool()
+def get_library_contents(list_id: str, limit: int = 100) -> str:
+    """Return folders and files of a document library (path, size, metadata columns,
+    author/editor, unique permissions). FSObjType 1 = folder, 0 = file."""
+    c = sp()
+    fields = c.list_fields(list_id)
+    out = []
+    for item in c.list_items(list_id, fields, top=min(limit, 500), library=True):
+        out.append(item)
+        if len(out) >= limit:
+            break
+    return _dump(out)
+
+
+@mcp.tool()
+def get_term_set(term_set_id: str) -> str:
+    """Return a managed metadata term set with its term hierarchy (needs TermStore.Read.All)."""
+    return _dump(sp().term_set(term_set_id))
 
 
 @mcp.tool()

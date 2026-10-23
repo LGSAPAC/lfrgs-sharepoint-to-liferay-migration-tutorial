@@ -27,6 +27,21 @@ lists:
     "Old Archive":
       skip: true
 
+libraries:
+  skip: [Archive 2015]       # document libraries to leave behind
+  metadata: documentType     # documentType (Document Type per library) | description (metadata as text)
+
+taxonomy:
+  scope: global              # global (usable by Spaces, Objects and documents) | site
+
+news:
+  target: blogs              # blogs | structure (News CMS structure) | pages
+  structureName: News
+
+audit:
+  fields: true               # spCreated / spModified / spCreatedBy / spModifiedBy on every migrated record
+  impersonate: false         # create records as their original author via doAsUserId (needs Impersonate)
+
 pages:
   skip: [Template.aspx]
   navigationMenuName: SharePoint Navigation

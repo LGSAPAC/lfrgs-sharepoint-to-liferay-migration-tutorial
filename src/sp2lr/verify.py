@@ -38,6 +38,27 @@ def verify(lr: LiferayClient, out: Path) -> dict:
     found_pages = sum(1 for p in plan["pages"] if lr.site_page(site_id, p["friendlyUrlPath"]))
     row("Pages", len(plan["pages"]), found_pages)
 
+    for lib in plan.get("libraries", []):
+        folders = state.get("folders", {})
+        docs = state.get("documents", {})
+        row(f"Library '{lib['title']}' folders", len(lib["folders"]), sum(1 for f in lib["folders"] if f["erc"] in folders))
+        found = sum(1 for d in lib["documents"]
+                    if d["erc"] in docs and lr.get(f"/o/headless-delivery/v1.0/documents/{docs[d['erc']]}?fields=id"))
+        row(f"Library '{lib['title']}' documents", len(lib["documents"]), found,
+            f"{len(lib['skippedFiles'])} skipped at extract" if lib["skippedFiles"] else "")
+
+    cats = state.get("categories", {})
+    for voc in plan.get("vocabularies", []):
+        row(f"Vocabulary '{voc['name']}'", len(voc["categories"]),
+            sum(1 for c in voc["categories"] if c["termGuid"] in cats))
+
+    news = plan.get("news") or {}
+    if news.get("posts"):
+        posted = state.get("blogPostings", {})
+        row("News -> blog postings", len(news["posts"]),
+            sum(1 for p in news["posts"] if p["erc"] in posted
+                and lr.get(f"/o/headless-delivery/v1.0/blog-postings/{posted[p['erc']]}?fields=id")))
+
     report = {"rows": rows, "manual": state.get("manual", []), "errors": state.get("errors", [])}
     md = ["# Verification report", "", "| Area | SharePoint | Liferay | OK |", "|---|---|---|---|"]
     md += [f"| {r['area']} | {r['expected']} | {r['actual']} | {'yes' if r['ok'] else '**NO** ' + r['note']} |" for r in rows]

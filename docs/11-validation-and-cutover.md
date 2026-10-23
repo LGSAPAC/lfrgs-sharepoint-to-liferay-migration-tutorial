@@ -1,6 +1,6 @@
-# 9. Validation and cutover
+# 11. Validation and cutover
 
-## 9.1 Automated reconciliation
+## 11.1 Automated reconciliation
 
 ```bash
 sp2lr verify
@@ -16,6 +16,10 @@ sp2lr verify
 | List 'Product Catalog' -> ProductCatalog     |        412 |     412 | yes |
 | List 'Support Requests' -> SupportRequests   |       1893 |    1893 | yes |
 | Pages                                        |         18 |      18 | yes |
+| Library 'Documents' folders                  |         88 |      88 | yes |
+| Library 'Documents' documents                |       1203 |    1203 | yes |
+| Vocabulary 'Departments'                     |         14 |      14 | yes |
+| News -> blog postings                        |          6 |       6 | yes |
 
 ## Manual follow-ups
 - [ ] Connect Space 'Marketing Content' to site 'Marketing' …
@@ -26,7 +30,7 @@ sp2lr verify
 Every API call that failed is listed under *Errors during load*, and `out/state.json` keeps the full
 list. Fix the cause, then re-run only the affected phase. All phases are idempotent.
 
-## 9.2 Agent-assisted validation (both MCP servers)
+## 11.2 Agent-assisted validation (both MCP servers)
 
 Count reconciliation proves completeness, not fidelity. Use
 [`prompts/03-validate.md`](../prompts/03-validate.md) to have the agent sample and compare. It:
@@ -41,7 +45,7 @@ Count reconciliation proves completeness, not fidelity. Use
 Keep the validation session **read-only**: run it with a Liferay account that has view permissions
 only, or tell the agent not to call any POST, PUT, PATCH or DELETE tools.
 
-## 9.3 User acceptance
+## 11.3 User acceptance
 
 | Who | Checks |
 |---|---|
@@ -51,14 +55,15 @@ only, or tell the agent not to call any POST, PUT, PATCH or DELETE tools.
 | A restricted user | Cannot see the entries they couldn't see in SharePoint |
 | Search | CMS search and site search find migrated entries and pages |
 
-## 9.4 Delta runs and cutover
+## 11.4 Delta runs and cutover
 
 SharePoint stays live during the project, so plan for at least one delta:
 
 ```bash
 sp2lr extract          # fresh snapshot
 sp2lr plan
-sp2lr load --phase users --phase groups --phase structures --phase entries --phase permissions
+sp2lr load --phase users --phase groups --phase taxonomy --phase structures --phase entries \
+           --phase documents --phase news --phase permissions
 sp2lr verify
 ```
 
@@ -66,6 +71,8 @@ sp2lr verify
   SharePoint overwrite the Liferay copy. Freeze editing in Liferay until cutover.
 * **Deleted items** aren't removed automatically. Compare `out/state.json` entry IDs with the new
   extract and delete the orphans deliberately.
+* **New files and folders** are uploaded. Changed files aren't, so delete and re-run them deliberately.
+* **New news posts** become new blog postings.
 * **New pages** are created. **Changed pages** are skipped, because pages may have been rebuilt by
   hand in Liferay. Delete and re-run a page only if it hasn't been edited.
 
@@ -79,4 +86,4 @@ Cutover runbook:
 5. Keep the SharePoint site read-only for a retention period, then archive it.
 6. Disable the migration account in Liferay. Revoke the Entra app's consent, or remove the app.
 
-Next: [10. Troubleshooting](10-troubleshooting.md)
+Next: [12. Troubleshooting](12-troubleshooting.md)

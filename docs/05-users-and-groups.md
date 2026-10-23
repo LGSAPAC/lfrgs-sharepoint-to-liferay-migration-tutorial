@@ -73,7 +73,7 @@ POST /api/jsonws/invoke  {"/usergroupgrouprole/add-user-group-group-roles": {"us
 > 2026.Q3 at `/api/jsonws`. If your security policy disables it, assign the user groups in *Site Settings →
 > Memberships → User Groups* and *CMS → Space → Members*.
 
-The phase also creates two custom roles that Edit and Contribute map to (see [Chapter 8](08-permissions.md)):
+The phase also creates two custom roles that Edit and Contribute map to (see [Chapter 10](10-permissions.md)):
 
 * `SP Contributor`, a site role
 * `SP Space Contributor`, a depot (space) role
@@ -84,4 +84,4 @@ The phase also creates two custom roles that Edit and Contribute map to (see [Ch
 > users in each. Compare with `list_site_groups` from the sharepoint MCP server and flag any
 > difference in membership counts.
 
-Next: [6. Lists: CMS structures or Objects](06-lists-cms-or-objects.md)
+Next: [6. Managed metadata](06-managed-metadata.md)

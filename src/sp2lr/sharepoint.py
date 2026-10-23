@@ -23,7 +23,12 @@ GRAPH = "https://graph.microsoft.com/v1.0"
 SUPPORTED_FIELD_TYPES = {
     "Text", "Note", "Number", "Currency", "DateTime", "Boolean", "Choice",
     "MultiChoice", "Lookup", "LookupMulti", "User", "UserMulti", "URL",
+    "TaxonomyFieldType", "TaxonomyFieldTypeMulti",
 }
+
+# Libraries that SharePoint creates for its own purposes
+SYSTEM_LIBRARIES = {"Site Assets", "Style Library", "Form Templates", "Preservation Hold Library",
+                    "Site Pages", "Pages", "Images", "Site Collection Documents", "Site Collection Images"}
 
 # Internal fields we never migrate as content columns
 SYSTEM_FIELDS = {
@@ -31,6 +36,10 @@ SYSTEM_FIELDS = {
     "DocIcon", "ItemChildCount", "FolderChildCount", "AppAuthor", "AppEditor",
     "_ComplianceFlags", "_ComplianceTag", "_ComplianceTagWrittenTime",
     "_ComplianceTagUserId", "_IsRecord", "ComplianceAssetId", "_ColorTag",
+    # document library internals
+    "_ExtendedDescription", "_dlc_DocId", "_dlc_DocIdUrl", "_dlc_DocIdPersistId", "TaxCatchAll",
+    "TaxCatchAllLabel", "MediaServiceImageTags", "lcf76f155ced4ddcb4097134ff3c332f", "_CopySource",
+    "CheckoutUser", "_CheckinComment", "_ModerationComments", "_ModerationStatus",
 }
 
 
@@ -79,10 +88,30 @@ class SharePointClient:
             yield from page.get("value", [])
             url = page.get("odata.nextLink")
 
-    def download(self, server_relative_url: str) -> bytes:
+    def _file_url(self, server_relative_url: str) -> str:
         path = quote(server_relative_url.replace("'", "''"))
-        url = f"{self.web_url}/_api/web/GetFileByServerRelativeUrl('{path}')/$value"
-        return self._request(url, self.tokens.sharepoint_token(), "*/*", raw=True)
+        return f"{self.web_url}/_api/web/GetFileByServerRelativeUrl('{path}')/$value"
+
+    def download(self, server_relative_url: str) -> bytes:
+        return self._request(self._file_url(server_relative_url), self.tokens.sharepoint_token(), "*/*", raw=True)
+
+    def download_to(self, server_relative_url: str, target) -> int:
+        """Stream a (possibly large) file to disk. Returns the number of bytes written."""
+        target.parent.mkdir(parents=True, exist_ok=True)
+        for attempt in range(6):
+            headers = {"Authorization": f"Bearer {self.tokens.sharepoint_token()}"}
+            with self.http.stream("GET", self._file_url(server_relative_url), headers=headers) as r:
+                if r.status_code in (429, 503):
+                    time.sleep(int(r.headers.get("Retry-After", 2 ** attempt)))
+                    continue
+                r.raise_for_status()
+                size = 0
+                with open(target, "wb") as fh:
+                    for chunk in r.iter_bytes(1 << 20):
+                        fh.write(chunk)
+                        size += len(chunk)
+                return size
+        raise RuntimeError(f"Throttled downloading {server_relative_url}")
 
     # ------------------------------------------------------------------ site
     def site(self) -> dict:
@@ -125,26 +154,25 @@ class SharePointClient:
         """The Site Pages list item behind a page (for unique permissions)."""
         items = self.rest(
             "/web/lists/getbytitle('Site Pages')/items"
-            f"?$select=Id,FileLeafRef,HasUniqueRoleAssignments&$filter=FileLeafRef eq '{page_name}'"
+            "?$select=Id,FileLeafRef,HasUniqueRoleAssignments,Created,Modified,FirstPublishedDate,"
+            "Author/EMail,Author/Title,Editor/EMail,Editor/Title&$expand=Author,Editor"
+            f"&$filter=FileLeafRef eq '{page_name}'"
         ).get("value", [])
         return items[0] if items else {}
 
     # ----------------------------------------------------------------- lists
     def list_lists(self, include_hidden: bool = False) -> list[dict]:
-        # BaseTemplate 100 = Custom List; 101 = Document Library (out of scope, see docs)
+        # BaseTemplate 100 = Custom List; 101 = Document Library; 119 = Site Pages
         select = ("Id,Title,Description,BaseTemplate,ItemCount,Hidden,HasUniqueRoleAssignments,EntityTypeName,"
-                  "EnableModeration,EnableVersioning,EnableAttachments,ContentTypesEnabled,RootFolder/ServerRelativeUrl")
+                  "EnableModeration,EnableVersioning,EnableAttachments,ContentTypesEnabled,IsSystemList,IsCatalog,"
+                  "RootFolder/ServerRelativeUrl")
         lists = self.rest(f"/web/lists?$select={select}&$expand=RootFolder").get("value", [])
         return [l for l in lists if include_hidden or not l.get("Hidden")]
 
     def list_fields(self, list_id: str) -> list[dict]:
-        select = (
-            "Id,InternalName,Title,TypeAsString,Required,Hidden,ReadOnlyField,Description,"
-            "Choices,LookupList,LookupField,AllowMultipleValues,RichText,DisplayFormat,"
-            "MaxLength,MinimumValue,MaximumValue,Decimals,Indexed,EnforceUniqueValues,FromBaseType,DefaultValue,"
-            "ValidationFormula,ValidationMessage,Formula"
-        )
-        fields = self.rest(f"/web/lists(guid'{list_id}')/fields?$select={select}").get("value", [])
+        # No $select: subtype properties (Choices, LookupList, TermSetId, RichText...) are only
+        # returned when the whole field resource is requested.
+        fields = self.rest(f"/web/lists(guid'{list_id}')/fields").get("value", [])
         out = []
         for f in fields:
             if f.get("Hidden") or f["InternalName"] in SYSTEM_FIELDS:
@@ -156,10 +184,15 @@ class SharePointClient:
             out.append(f)
         return out
 
-    def list_items(self, list_id: str, fields: list[dict], top: int = 500) -> Iterator[dict]:
+    def list_items(self, list_id: str, fields: list[dict], top: int = 500,
+                   library: bool = False) -> Iterator[dict]:
         select = ["Id", "Title", "Created", "Modified", "HasUniqueRoleAssignments",
                   "Author/EMail", "Author/Title", "Editor/EMail", "Editor/Title"]
         expand = {"Author", "Editor"}
+        if library:
+            # FSObjType 1 = folder, 0 = file
+            select += ["FileLeafRef", "FileRef", "FileDirRef", "FSObjType", "File/Length", "File/UIVersionLabel"]
+            expand.add("File")
         for f in fields:
             name, kind = f["InternalName"], f["TypeAsString"]
             if kind in ("User", "UserMulti"):
@@ -188,6 +221,21 @@ class SharePointClient:
             v.pop("ViewFields", None)
             out.append(v)
         return out
+
+    # -------------------------------------------------------- managed metadata
+    def term_set(self, term_set_id: str) -> dict:
+        """A term set with its full term hierarchy (Graph termStore, needs TermStore.Read.All)."""
+        base = f"/sites/{self.site_id}/termStore/sets/{term_set_id}"
+        ts = self.graph(base)
+
+        def children(path: str) -> list[dict]:
+            out = []
+            for term in self.graph_paged(f"{path}/children"):
+                out.append({"id": term["id"], "labels": term.get("labels", []),
+                            "children": children(f"{base}/terms/{term['id']}")})
+            return out
+
+        return {"id": ts["id"], "localizedNames": ts.get("localizedNames", []), "terms": children(base)}
 
     def item_attachments(self, list_id: str, item_id: int) -> list[dict]:
         return self.rest(f"/web/lists(guid'{list_id}')/items({item_id})/AttachmentFiles").get("value", [])

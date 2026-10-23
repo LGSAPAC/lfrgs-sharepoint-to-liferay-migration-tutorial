@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .sharepoint import SharePointClient, parse_login
+from .sharepoint import SYSTEM_LIBRARIES, SharePointClient, parse_login
 
 log = logging.getLogger(__name__)
 
@@ -17,7 +17,8 @@ def _write(path: Path, data) -> None:
     path.write_text(json.dumps(data, indent=2, default=str))
 
 
-def extract(sp: SharePointClient, out: Path, with_attachments: bool = True) -> dict:
+def extract(sp: SharePointClient, out: Path, with_attachments: bool = True,
+            with_libraries: bool = True, max_file_mb: int = 250) -> dict:
     root = out / "extract"
     summary: dict = {}
 
@@ -103,12 +104,62 @@ def extract(sp: SharePointClient, out: Path, with_attachments: bool = True) -> d
     summary["lists"] = len(lists_out)
     summary["items"] = sum(x["itemCount"] for x in lists_out)
 
+    log.info("Document libraries")
+    libs_out = []
+    if with_libraries:
+        for l in sp.list_lists():
+            if l["BaseTemplate"] != 101 or l["Title"] in SYSTEM_LIBRARIES or l.get("IsSystemList") or l.get("IsCatalog"):
+                continue
+            fields = sp.list_fields(l["Id"])
+            items = list(sp.list_items(l["Id"], fields, library=True))
+            files = [i for i in items if i.get("FSObjType") == 0]
+            total = 0
+            for item in files:
+                size = (item.get("File") or {}).get("Length") or 0
+                if int(size) > max_file_mb * 1024 * 1024:
+                    item["_skipped"] = f"larger than {max_file_mb} MB"
+                    continue
+                target = root / "files" / "libraries" / l["Id"] / item["FileRef"].lstrip("/")
+                try:
+                    total += sp.download_to(item["FileRef"], target)
+                    item["_localPath"] = str(target)
+                except Exception as e:  # noqa: BLE001 - report and continue
+                    item["_skipped"] = f"download failed: {e}"
+                    log.warning("Could not download %s: %s", item["FileRef"], e)
+            libs_out.append({"list": l, "fields": fields, "itemCount": len(items),
+                             "fileCount": len(files), "folderCount": len(items) - len(files), "bytes": total})
+            _write(root / "libraries" / f"{l['Id']}.items.json", items)
+            if l.get("HasUniqueRoleAssignments"):
+                perms["lists"][l["Id"]] = sp.role_assignments("list", l["Id"])
+            for item in items:
+                if item.get("HasUniqueRoleAssignments"):
+                    perms["items"].setdefault(l["Id"], {})[str(item["Id"])] = sp.role_assignments("item", l["Id"], item["Id"])
+            log.info("  %s: %d files, %d folders, %.1f MB", l["Title"], len(files), len(items) - len(files), total / 1e6)
+    _write(root / "libraries.json", libs_out)
+    summary["libraries"] = len(libs_out)
+    summary["files"] = sum(x["fileCount"] for x in libs_out)
+
+    log.info("Managed metadata")
+    termsets: dict[str, dict] = {}
+    for entry in lists_out + libs_out:
+        for f in entry["fields"]:
+            ts_id = (f.get("TermSetId") or "").lower()
+            if f["TypeAsString"].startswith("TaxonomyFieldType") and ts_id and ts_id not in termsets:
+                try:
+                    termsets[ts_id] = sp.term_set(ts_id)
+                except Exception as e:  # noqa: BLE001 - fall back to labels seen in items
+                    log.warning("Term set %s not readable (%s); categories will be built from item values", ts_id, e)
+                    termsets[ts_id] = {"id": ts_id, "unavailable": True, "terms": []}
+    _write(root / "termsets.json", termsets)
+    summary["termSets"] = len(termsets)
+
     log.info("Pages")
     pages = []
     for p in sp.list_pages():
         full = sp.get_page(p["id"])
         full["_images"] = _download_page_images(sp, full, root)
         li = sp.page_list_item(p["name"])
+        full["_listItem"] = {k: li.get(k) for k in ("Id", "Created", "Modified", "FirstPublishedDate", "Author", "Editor")}
         if li.get("HasUniqueRoleAssignments"):
             perms["pages"][p["name"]] = sp.role_assignments("item", _site_pages_list_id(sp), li["Id"])
         pages.append(full)

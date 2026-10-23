@@ -21,6 +21,17 @@ each text web part (ignore markup differences), image count, and that links poin
 and compare them with the plan's `siteGrants`. For every entry in `plan.entryGrants`, read its
 permissions in Liferay and confirm that only the listed principals' roles hold VIEW.
 
+**Document libraries:** for each library in `plan.libraries`, compare `get_library_contents` with the
+Liferay folder tree under the library's root folder: folder names and nesting, file count per folder,
+and for 5 files the document type values, categories and `spCreatedBy`/`spCreated`. For every
+document or folder with a `permissionScope`, confirm a regular site member can't view it.
+
+**Managed metadata:** compare each term set (`get_term_set`) with its Liferay vocabulary: same category
+names and parents.
+
+**News:** for each post in `plan.news.posts`, fetch the blog posting by external reference code and
+compare headline, body text and `datePublished` with the SharePoint news page.
+
 **Navigation:** compare `get_navigation` with the Liferay navigation menu "SharePoint Navigation".
 
 Write `out/validation.md` with a table per area (check · expected · actual · pass/fail · evidence),

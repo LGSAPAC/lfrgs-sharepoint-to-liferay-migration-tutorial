@@ -4,7 +4,8 @@ Phases run in dependency order and are idempotent: every Liferay record is
 keyed by an External Reference Code derived from the SharePoint ID, and
 out/state.json remembers the Liferay IDs so a phase can be re-run safely.
 
-  site -> users -> groups -> structures -> entries -> pages -> permissions
+  site -> users -> groups -> taxonomy -> structures -> entries -> documents
+       -> pages -> news -> permissions
 """
 
 from __future__ import annotations
@@ -14,12 +15,13 @@ import json
 import logging
 from pathlib import Path
 
+from . import libraries as libs
 from . import transform as t
 from .liferay import LiferayClient, LiferayError
 
 log = logging.getLogger(__name__)
 
-PHASES = ["site", "users", "groups", "structures", "entries", "pages", "permissions"]
+PHASES = ["site", "users", "groups", "taxonomy", "structures", "entries", "documents", "pages", "news", "permissions"]
 
 CONTRIBUTOR_SITE_ROLE = "SP Contributor"
 CONTRIBUTOR_SPACE_ROLE = "SP Space Contributor"
@@ -47,6 +49,17 @@ class Loader:
                 log.info("== phase: %s", phase)
                 getattr(self, f"phase_{phase}")()
                 self.save()
+
+    def _as_author(self, email: str | None) -> dict | None:
+        """doAsUserId query param to create a record as its original author (audit.impersonate)."""
+        if not self.plan.get("audit", {}).get("impersonate") or not email:
+            return None
+        uid = self.state.get("users", {}).get(email.lower())
+        return {"doAsUserId": uid} if uid else None
+
+    def _category_ids(self, guids) -> list[int]:
+        cats = self.state.get("categories", {})
+        return sorted({cats[g] for g in guids if g in cats})
 
     def _try(self, what: str, fn, *args, manual: str | None = None, **kwargs):
         try:
@@ -169,6 +182,40 @@ class Loader:
                       "/usergroupgrouprole/add-user-group-group-roles",
                       {"userGroupId": ugid, "groupId": group_id, "roleIds": role_ids})
 
+    # -------------------------------------------------------------- taxonomy
+    def phase_taxonomy(self) -> None:
+        """Term sets -> vocabularies, terms -> categories (parents first)."""
+        if not self.plan.get("vocabularies"):
+            return
+        scope = self.plan.get("taxonomy", {}).get("scope", "global")
+        if scope == "global":
+            group = self.lr.site_by_friendly_url("global") if not self.lr.dry_run else {"id": 0}
+            group_id = (group or {}).get("id")
+        else:
+            group_id = self.state["site"]["id"]
+        if group_id is None:
+            self.errors.append("taxonomy: global site not found")
+            return
+        cats = self.state.setdefault("categories", {})
+        vocabs = self.state.setdefault("vocabularies", {})
+        for v in self.plan["vocabularies"]:
+            voc = (self.lr.vocabulary(group_id, v["erc"]) if not self.lr.dry_run else None) or \
+                self._try(f"vocabulary {v['name']}", self.lr.create_vocabulary, group_id, v["erc"], v["name"])
+            if not voc:
+                continue
+            vocabs[v["erc"]] = voc["id"]
+            by_erc: dict[str, int] = {}
+            for c in v["categories"]:
+                if c["termGuid"] in cats:
+                    by_erc[c["erc"]] = cats[c["termGuid"]]
+                    continue
+                existing = self.lr.category(voc["id"], c["erc"]) if not self.lr.dry_run else None
+                cat = existing or self._try(f"category {c['name']}", self.lr.create_category, voc["id"],
+                                            by_erc.get(c["parentErc"]) if c["parentErc"] else None, c["erc"], c["name"])
+                if cat:
+                    cats[c["termGuid"]] = by_erc[c["erc"]] = cat["id"]
+            log.info("Vocabulary %s: %d categories", v["name"], len(by_erc))
+
     # ------------------------------------------------------------ structures
     def phase_structures(self) -> None:
         defs = self.state.setdefault("definitions", {})
@@ -248,13 +295,21 @@ class Loader:
             items = json.loads((root / f"{lp['listId']}.items.json").read_text())
             ids = entries.setdefault(lp["listId"], {})
             base = self._scope_path(lp)
+            news_pages = self._news_bodies(items) if lp.get("news") else {}
             for item in items:
                 body = t.item_to_entry(lp, item)
+                if lp.get("news"):
+                    body["body"] = news_pages.get(item.get("_pageId"), "")
                 for field, att in zip(lp["attachmentFields"], item.get("_attachments", [])):
                     body[field] = {"name": att["fileName"],
                                    "fileBase64": base64.b64encode(Path(att["localPath"]).read_bytes()).decode()}
+                cat_ids = self._category_ids(tv["guid"] for tf in lp.get("taxonomyFields", [])
+                                             for tv in t.term_values(item, tf["field"]))
+                if cat_ids:
+                    body["taxonomyCategoryIds"] = cat_ids
                 res = self._try(f"entry {body['externalReferenceCode']}", self.lr.call, "PUT",
-                                f"{base}/by-external-reference-code/{body['externalReferenceCode']}", body)
+                                f"{base}/by-external-reference-code/{body['externalReferenceCode']}", body,
+                                params=self._as_author(((item.get("Author") or {}).get("EMail"))))
                 if res:
                     ids[str(item["Id"])] = res["id"]
             log.info("%s: %d/%d entries", lp["listTitle"], len(ids), len(items))
@@ -308,20 +363,11 @@ class Loader:
         done = self.state.setdefault("pages", {})
         pages = {p["id"]: p for p in json.loads((self.out / "extract" / "pages.json").read_text())}
         prefix = f"/web/{self.plan['site']['key']}"
-        links = t.page_link_map(list(pages.values()), self.plan["site"]["spPath"], prefix)
+        # News page links point to their blog postings when news.target is blogs
+        links = (self.plan.get("news") or {}).get("links") or \
+            t.page_link_map(list(pages.values()), self.plan["site"]["spPath"], prefix)
 
-        url_map: dict[str, str] = self.state.setdefault("images", {})
-        folder = None
-        for pp in self.plan["pages"]:
-            for rel, local in pages[pp["id"]].get("_images", {}).items():
-                if rel in url_map:
-                    continue
-                folder = folder or self._try("image folder", self.lr.ensure_document_folder, site_id, "SharePoint Images")
-                doc = self._try(f"image {rel}", self.lr.upload_document, site_id, local, Path(local).name,
-                                folder["id"] if folder else None)
-                if doc:
-                    url_map[rel] = doc.get("contentUrl") or f"/documents/d/{self.plan['site']['key']}/{Path(local).name}"
-                    url_map[f"https://{self._sp_host()}{rel}"] = url_map[rel]
+        url_map = self._upload_page_images([pages[pp["id"]] for pp in self.plan["pages"]])
 
         for pp in self.plan["pages"]:
             if pp["name"] in done:
@@ -345,6 +391,110 @@ class Loader:
         if items:
             self._try("navigation menu", self.lr.upsert_navigation_menu, site_id, self.plan["navigation"]["menuName"], items)
             self.manual.append(f"Mark navigation menu '{self.plan['navigation']['menuName']}' as Primary Navigation")
+
+    def _pages_by_id(self) -> dict[str, dict]:
+        return {p["id"]: p for p in json.loads((self.out / "extract" / "pages.json").read_text())}
+
+    def _upload_page_images(self, pages: list[dict]) -> dict[str, str]:
+        """Upload images used by pages/news once; returns SharePoint URL -> Liferay URL."""
+        site_id = self.state["site"]["id"]
+        url_map: dict[str, str] = self.state.setdefault("images", {})
+        folder = None
+        for page in pages:
+            for rel, local in page.get("_images", {}).items():
+                if rel in url_map:
+                    continue
+                folder = folder or self._try("image folder", self.lr.ensure_document_folder, site_id, "SharePoint Images")
+                doc = self._try(f"image {rel}", self.lr.upload_document, site_id, local, Path(local).name,
+                                folder["id"] if folder else None)
+                if doc:
+                    url_map[rel] = doc.get("contentUrl") or f"/documents/d/{self.plan['site']['key']}/{Path(local).name}"
+                    url_map[f"https://{self._sp_host()}{rel}"] = url_map[rel]
+        return url_map
+
+    def _news_bodies(self, items: list[dict]) -> dict[str, str]:
+        pages = self._pages_by_id()
+        news_pages = [pages[i["_pageId"]] for i in items if i.get("_pageId") in pages]
+        url_map = self._upload_page_images(news_pages)
+        links = self.plan.get("news", {}).get("links", {})
+        return {p["id"]: t.page_to_html(p, url_map, links) for p in news_pages}
+
+    # ------------------------------------------------------------- documents
+    def phase_documents(self) -> None:
+        site_id = self.state["site"]["id"]
+        folders = self.state.setdefault("folders", {})
+        docs = self.state.setdefault("documents", {})
+        doc_types = self.state.setdefault("documentTypes", {})
+        for lib in self.plan.get("libraries", []):
+            dt = lib["documentType"]
+            strategy = lib.get("metadataStrategy", "documentType")
+            if strategy == "documentType" and dt["fields"] and dt["erc"] not in doc_types:
+                key = dt["dataDefinition"]["dataDefinitionKey"]
+                existing = self.lr.document_type_by_key(site_id, key) if not self.lr.dry_run else None
+                created = existing or self._try(
+                    f"document type {dt['name']}", self.lr.create_document_type, site_id, dt["dataDefinition"],
+                    manual=f"Create document type '{dt['name']}' (Documents and Media > Document Types); "
+                           f"metadata was kept in each document's description")
+                if created:
+                    doc_types[dt["erc"]] = created["id"]
+            use_type = strategy == "documentType" and dt["erc"] in doc_types
+
+            for f in lib["folders"]:
+                if f["erc"] in folders:
+                    continue
+                parent = folders.get(f["parentErc"]) if f["parentErc"] else None
+                res = self._try(f"folder {f['url']}", self.lr.create_folder, site_id, parent, f["erc"], f["name"])
+                if res:
+                    folders[f["erc"]] = res["id"]
+            for d in lib["documents"]:
+                if d["erc"] in docs or d["folderErc"] not in folders:
+                    continue
+                document = {"externalReferenceCode": d["erc"], "title": d["title"]}
+                if use_type:
+                    document["documentType"] = {
+                        "name": dt["name"],
+                        "contentFields": [{"name": k, "contentFieldValue": {"data": v}} for k, v in d["metadata"].items()]}
+                elif d["metadata"]:
+                    document["description"] = libs.describe_metadata(d["metadata"], dt)
+                cat_ids = self._category_ids(d["terms"])
+                if cat_ids:
+                    document["taxonomyCategoryIds"] = cat_ids
+                res = self._try(f"document {d['fileName']}", self.lr.create_document, folders[d["folderErc"]],
+                                d["localPath"], document, params=self._as_author(d["authorEmail"]))
+                if res is None and use_type:
+                    # Retry without the document type so the file itself is never lost
+                    document.pop("documentType", None)
+                    document["description"] = libs.describe_metadata(d["metadata"], dt)
+                    res = self._try(f"document {d['fileName']} (no type)", self.lr.create_document,
+                                    folders[d["folderErc"]], d["localPath"], document)
+                if res:
+                    docs[d["erc"]] = res["id"]
+            self.save()
+            log.info("Library %s: %d folders, %d/%d documents", lib["title"],
+                     sum(1 for f in lib["folders"] if f["erc"] in folders),
+                     sum(1 for d in lib["documents"] if d["erc"] in docs), len(lib["documents"]))
+
+    # ------------------------------------------------------------------ news
+    def phase_news(self) -> None:
+        news = self.plan.get("news") or {}
+        if news.get("target") != "blogs" or not news.get("posts"):
+            return
+        site_id = self.state["site"]["id"]
+        done = self.state.setdefault("blogPostings", {})
+        pages = self._pages_by_id()
+        url_map = self._upload_page_images([pages[p["pageId"]] for p in news["posts"]])
+        for post in news["posts"]:
+            if post["erc"] in done:
+                continue
+            body = {"externalReferenceCode": post["erc"], "headline": post["headline"],
+                    "alternativeHeadline": post["description"], "description": post["description"],
+                    "articleBody": t.page_to_html(pages[post["pageId"]], url_map, news.get("links", {})),
+                    "friendlyUrlPath": post["friendlyUrlPath"], "datePublished": post["datePublished"]}
+            res = self._try(f"blog {post['headline']}", self.lr.create_blog_posting, site_id, body,
+                            params=self._as_author(post["authorEmail"]))
+            if res:
+                done[post["erc"]] = res["id"]
+        log.info("News: %d/%d blog postings", len(done), len(news["posts"]))
 
     def _sp_host(self) -> str:
         site = json.loads((self.out / "extract" / "site.json").read_text())
@@ -372,6 +522,28 @@ class Loader:
                     body.append({"roleName": t.principal_role_name(p["name"], target), "actionIds": g["actions"]})
                 self._try(f"permissions {d['name']}/{lr_id}", self.lr.call, "PUT",
                           f"{d['restContextPath']}/{lr_id}/permissions", body)
+        # Documents and folders: Liferay doesn't inherit permissions down the tree, so every
+        # folder/document under a SharePoint unique-permission scope gets explicit permissions
+        folders, docs = self.state.get("folders", {}), self.state.get("documents", {})
+        doc_baseline = ["Site Member", "Guest", "User"]
+        for lib in self.plan.get("libraries", []):
+            grants = lib.get("grants", {})
+            for kind, records, ids in (("document-folders", lib["folders"], folders), ("documents", lib["documents"], docs)):
+                for rec in records:
+                    scope = rec.get("permissionScope")
+                    lr_id = ids.get(rec["erc"])
+                    if not scope or scope not in grants or not lr_id:
+                        continue
+                    body = [{"roleName": r, "actionIds": []} for r in doc_baseline]
+                    for g in grants[scope]:
+                        actions = list(libs.DOC_ACTIONS.get(g["level"], ["VIEW"]))
+                        if kind == "document-folders":
+                            actions += libs.FOLDER_EXTRA.get(g["level"], [])
+                        body.append({"roleName": t.principal_role_name(principals[g["principal"]]["name"], "site"),
+                                     "actionIds": actions})
+                    self._try(f"permissions {kind}/{lr_id}", self.lr.call, "PUT",
+                              f"/o/headless-delivery/v1.0/{kind}/{lr_id}/permissions", body)
+
         # Contributors may add entries to every migrated structure
         for d in defs.values():
             self._try(f"ADD_OBJECT_ENTRY on {d['name']}", self.lr.call, "PUT", f"{d['restContextPath']}/permissions",

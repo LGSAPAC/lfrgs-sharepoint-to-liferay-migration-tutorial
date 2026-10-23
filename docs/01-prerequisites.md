@@ -24,6 +24,7 @@ You need three things: access to the **source** SharePoint Online site, a **targ
    | Microsoft Graph | Delegated | `Sites.Read.All` | Site resolution, modern pages (`canvasLayout`) |
    | Microsoft Graph | Delegated | `User.Read.All` | Entra profiles for Liferay user accounts |
    | Microsoft Graph | Delegated | `GroupMember.Read.All` | Expanding Entra and M365 groups used in SharePoint permissions |
+   | Microsoft Graph | Delegated | `TermStore.Read.All` | Managed metadata term sets → Liferay vocabularies |
    | SharePoint | Delegated | `AllSites.FullControl` | SharePoint REST: list schemas, items, SharePoint groups, **role assignments** |
 
    > `AllSites.FullControl` is requested because SharePoint only returns role assignments to callers
@@ -32,11 +33,14 @@ You need three things: access to the **source** SharePoint Online site, a **targ
 
 6. Click **Grant admin consent for <tenant>**.
 
+> Added `TermStore.Read.All` after your first sign-in? Delete `~/.sp2lr/token_cache.json` and run
+> `sp2lr login` again, so the cached token picks up the new scope.
+
 #### Option: app-only (unattended) access
 
 For scheduled delta runs, use a certificate instead of device code:
 
-* Add **Application** permissions: Graph `Sites.Read.All`, `User.Read.All`, `GroupMember.Read.All`, and
+* Add **Application** permissions: Graph `Sites.Read.All`, `User.Read.All`, `GroupMember.Read.All`, `TermStore.Read.All`, and
   SharePoint `Sites.FullControl.All`. Alternatively, use `Sites.Selected` and grant `fullcontrol` on the
   one source site.
 * Upload a certificate under **Certificates & secrets**. SharePoint REST **rejects app-only tokens

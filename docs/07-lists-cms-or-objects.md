@@ -1,4 +1,4 @@
-# 6. Lists: CMS structures or Objects
+# 7. Lists: CMS structures or Objects
 
 SharePoint uses one feature, the **list**, for two very different jobs:
 
@@ -15,7 +15,7 @@ Liferay 2026.Q3 has a purpose-built home for each, and both are built on Liferay
 | Strengths | Versioning, friendly URLs, translation, per-Space workflow, display page templates, reuse across sites | Object **views**, **layouts**, **validations**, **actions** (notifications, webhooks, Groovy), **state fields**, Forms, row-level permissions, REST/GraphQL for apps |
 | Replaces in SharePoint | Lists shown with list/highlighted-content web parts | Lists behind Power Automate flows, Power Apps forms, approval workflows |
 
-## 6.1 How `sp2lr` chooses
+## 7.1 How `sp2lr` chooses
 
 `mapping.yaml` → `lists.target` takes `auto` (default), `cms` or `objects`, and you can override it
 per list. With `auto`, every list is scored on signals from the extract, and the reasons are printed
@@ -59,7 +59,7 @@ sp2lr load --phase structures --phase entries
 
 ---
 
-## 6.2 Scenario A: Product Catalog → CMS content structure
+## 7.2 Scenario A: Product Catalog → CMS content structure
 
 **Use case:** the marketing team publishes products. The list is shown on several SharePoint pages,
 editors care about wording and images, and the same products should appear on other sites later.
@@ -126,7 +126,7 @@ PUT /o/c/productcatalogs/scopes/{spaceId}/by-external-reference-code/sp-item-aaa
 
 ---
 
-## 6.3 Scenario B: Orders → Liferay Object
+## 7.3 Scenario B: Orders → Liferay Object
 
 **Use case:** the sales team tracks orders. Each order has an owner, a status and a quantity, some
 orders are restricted to the Owners group, and a Power Automate flow e-mails the owner when the
@@ -191,7 +191,7 @@ PUT /o/c/orders/scopes/{siteId}/by-external-reference-code/sp-item-aaaaaaaa-…-
   "tags": [{"key": "urgent"}, {"key": "gift"}], "shipped": true }
 ```
 
-Row-level permissions work as in [Chapter 8](08-permissions.md), but with **site** roles
+Row-level permissions work as in [Chapter 10](10-permissions.md), but with **site** roles
 (`SP Site Principal - <group>`) because the entries live in the site, not in a Space.
 
 ### Finishing Scenario B in Liferay: rebuilding the app behaviour
@@ -217,7 +217,7 @@ backlog:
 
 ---
 
-## 6.4 Relationships across scenarios
+## 7.4 Relationships across scenarios
 
 Lookups are migrated whichever target each side has, so an Orders Object can point to a ProductCatalog
 CMS structure:
@@ -235,12 +235,12 @@ PUT   /o/c/orders/{orderId}/tags/{tagEntryId}
 > Cross-scope relationships (site Object → depot structure) are listed in the validation checklist
 > (L17). If your build rejects them, set both lists to the same target.
 
-## 6.5 What neither scenario migrates
+## 7.5 What neither scenario migrates
 
-* `Created` / `Modified` / `Author` / `Editor` values. Entries are created by the migration user.
-  Keep them by adding explicit fields such as `spCreated` and `spAuthor` with a `mapping.yaml` override.
+* Liferay's own `dateCreated` / `creator`. They're set at migration time. The SharePoint values are
+  kept in `spCreated`, `spModified`, `spCreatedBy` and `spModifiedBy`, and optionally as the real
+  creator ([Chapter 4](04-mapping-and-plan.md#45-created-modified-and-author)).
 * Version history. In the CMS, versioning starts at migration time. Objects don't version entries.
-* Managed metadata columns. Map them to Liferay **categories** by hand.
-* Document libraries. Use Documents and Media; see the Scope section of the README.
+* Managed metadata columns aren't fields. They become **categories** ([Chapter 6](06-managed-metadata.md)).
 
-Next: [7. Pages](07-pages.md)
+Next: [8. Document libraries](08-document-libraries.md)

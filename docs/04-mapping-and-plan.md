@@ -26,7 +26,7 @@ SharePoint site  ──►  Liferay Site  "Marketing"            pages, navigati
 ### CMS structure or classic Object?
 
 Both are object definitions, and `sp2lr` decides per list. With `lists.target: auto` (the
-default) it scores each list and explains why in `plan.md`. [Chapter 6](06-lists-cms-or-objects.md)
+default) it scores each list and explains why in `plan.md`. [Chapter 7](07-lists-cms-or-objects.md)
 walks through both scenarios end to end.
 
 | **CMS content structure** (`target: cms`) | **Liferay Object** (`target: objects`) |
@@ -100,7 +100,49 @@ permissions:
     Approve: { siteRole: Site Content Reviewer, spaceRole: Asset Library Content Reviewer }
 ```
 
-## 4.4 Build and review the plan
+## 4.4 Libraries, managed metadata and news
+
+The same plan also covers:
+
+* **Document libraries → Documents and Media** folders, documents and document types ([Chapter 8](08-document-libraries.md))
+* **Managed metadata → vocabularies and categories** ([Chapter 6](06-managed-metadata.md))
+* **News posts → Blogs** or a News structure ([Chapter 9](09-pages-and-news.md#95-news-posts))
+
+## 4.5 Created, Modified and Author
+
+Liferay sets `dateCreated`, `dateModified` and `creator` itself when a record is created, so a plain
+import would make every record look like it was created today by the migration account. Two
+complementary options keep the SharePoint history:
+
+```yaml
+audit:
+  fields: true        # default
+  impersonate: false  # opt-in
+```
+
+**`audit.fields`** adds four fields wherever data lands, and fills them from the SharePoint item:
+
+| SharePoint | Liferay field | Where |
+|---|---|---|
+| Created | `spCreated` (DateTime, UTC) | CMS structures, Objects, document types, News structure |
+| Modified | `spModified` (DateTime, UTC) | ditto |
+| Created By (Author) | `spCreatedBy` (e-mail) | ditto |
+| Modified By (Editor) | `spModifiedBy` (e-mail) | ditto |
+
+They're ordinary fields, so they can be sorted and filtered in object views, shown in display page
+templates and searched.
+
+**`audit.impersonate`** creates each entry, document and blog posting **as its original author**, by
+adding `?doAsUserId=<liferayUserId>` to the create call. Then `creator` in Liferay is the real person,
+not the migration account. Requirements and limits:
+
+* The migration account needs the *Impersonate* permission (Administrators have it).
+* The author must exist in Liferay. Authors who've left the company fall back to the migration user.
+* `dateCreated` is still the migration date. Only `spCreated` keeps the original date, except for
+  blog postings, whose `datePublished` is set from SharePoint.
+* Confirm on your build that headless endpoints honour `doAsUserId` (checklist item L29).
+
+## 4.6 Build and review the plan
 
 ```bash
 sp2lr plan --mapping mapping.yaml

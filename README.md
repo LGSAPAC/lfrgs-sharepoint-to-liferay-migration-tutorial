@@ -9,6 +9,10 @@ Liferay Objects):
 | Site (team / communication site) | **Site** for pages + a connected CMS **Space** for content |
 | Modern site pages (`SitePages/*.aspx`) | **Content pages** built from fragments, plus a navigation menu |
 | Images on pages | **Documents and Media** files in the site, links rewritten |
+| News posts | **Blog postings** (or a News CMS structure), original publish date kept |
+| Document libraries, folders, files | **Documents and Media** folders and documents |
+| Library metadata columns | A **Document Type** per library |
+| Managed metadata (term sets, terms) | **Vocabularies and categories**, hierarchy kept, tagged on entries and documents |
 | Custom lists (content: catalogs, FAQs, policies) | CMS **content structures** in a Space (depot-scoped object definitions) |
 | Custom lists (apps: requests, orders, approvals) | Liferay **Objects** in the site, with **object views** from list views |
 | List items + attachments | Structure **entries** (object entries) with Attachment fields |
@@ -16,13 +20,15 @@ Liferay Objects):
 | Entra ID users | Liferay **user accounts** keyed by Entra object ID (sign in with SSO) |
 | SharePoint groups / Entra groups | **User groups** with site and space membership |
 | Permission levels | **Site roles** and **space (asset library) roles** |
-| Unique item permissions | **Entry-level permissions** via per-principal roles |
+| Unique item / folder / file permissions | **Entry, folder and document permissions** via per-principal roles |
+| Created, Modified, Author, Editor | `spCreated` / `spModified` / `spCreatedBy` / `spModifiedBy` fields, optionally the real creator via impersonation |
 
 The migration is driven by **two MCP servers**, so an AI agent (Claude Code, Claude Desktop, Cursor, VS Code
 Copilot) can inventory the source, help with mapping decisions and check the result:
 
 * **SharePoint MCP server**: shipped in this repo (`sharepoint-mcp`), read-only, built on Microsoft
-  Graph and the SharePoint REST API. It exposes pages, lists, schemas, items, groups and role assignments.
+  Graph and the SharePoint REST API. It exposes pages, lists, libraries, term sets, schemas, items, groups
+  and role assignments.
 * **Liferay MCP server**: built into DXP 2026.Q3 at `/o/mcp`. It exposes the headless APIs as MCP tools.
 
 Bulk data moves through a deterministic, idempotent CLI (`sp2lr`) rather than through the LLM. The agent
@@ -52,14 +58,16 @@ plans and verifies. The CLI copies the records.
 | 1 | [Prerequisites](docs/01-prerequisites.md) | Entra app registration, Liferay 2026.Q3 in Docker, Python toolchain |
 | 2 | [MCP servers](docs/02-mcp-servers.md) | Enable Liferay's MCP server, run the SharePoint MCP server, wire both into Claude Code |
 | 3 | [Discovery and inventory](docs/03-discovery.md) | Inventory the live site through MCP and extract it |
-| 4 | [Mapping and plan](docs/04-mapping-and-plan.md) | Decide CMS vs Objects, field mappings, `mapping.yaml`, review `plan.md` |
+| 4 | [Mapping and plan](docs/04-mapping-and-plan.md) | Field mappings, Created/Modified/Author preservation, `mapping.yaml`, review `plan.md` |
 | 5 | [Users and groups](docs/05-users-and-groups.md) | Entra users → Liferay users, SharePoint groups → user groups |
-| 6 | [Lists: CMS structures or Objects](docs/06-lists-cms-or-objects.md) | Two scenarios: content lists → CMS structures, app lists → Objects (views, validations, actions) |
-| 7 | [Pages](docs/07-pages.md) | Modern pages → content pages, images, navigation |
-| 8 | [Permissions](docs/08-permissions.md) | Permission levels → roles, unique permissions → entry permissions |
-| 9 | [Validation and cutover](docs/09-validation-and-cutover.md) | Reconcile, agent-assisted spot checks, delta re-runs, cutover |
+| 6 | [Managed metadata](docs/06-managed-metadata.md) | Term sets → vocabularies, terms → categories |
+| 7 | [Lists: CMS structures or Objects](docs/07-lists-cms-or-objects.md) | Two scenarios: content lists → CMS structures, app lists → Objects (views, validations, actions) |
+| 8 | [Document libraries](docs/08-document-libraries.md) | Libraries → Documents and Media folders, files, document types, categories |
+| 9 | [Pages and news](docs/09-pages-and-news.md) | Modern pages → content pages, news → blogs, images, navigation |
+| 10 | [Permissions](docs/10-permissions.md) | Permission levels → roles; unique permissions → entry, folder and document permissions |
+| 11 | [Validation and cutover](docs/11-validation-and-cutover.md) | Reconcile, agent-assisted spot checks, delta re-runs, cutover |
 | — | [Validation checklist](docs/VALIDATION-CHECKLIST.md) | API assumptions to confirm against a real 2026.Q3 instance |
-| — | [Troubleshooting](docs/10-troubleshooting.md) | Common errors and fixes |
+| — | [Troubleshooting](docs/12-troubleshooting.md) | Common errors and fixes |
 
 ## Quick start
 
@@ -74,7 +82,8 @@ docker compose -f docker/docker-compose.yml up -d   # Liferay DXP 2026.Q3 (needs
 sp2lr extract                 # read the live SharePoint site
 sp2lr plan                    # writes out/plan.md, so review it
 sp2lr load --dry-run          # writes out/dry-run.jsonl, so review it
-sp2lr load                    # site → users → groups → structures → entries → pages → permissions
+sp2lr load                    # site → users → groups → taxonomy → structures → entries
+                              #   → documents → pages → news → permissions
 sp2lr verify                  # writes out/verify.md
 ```
 
@@ -91,6 +100,8 @@ src/sp2lr/
   mcp_server.py        SharePoint MCP server (stdio)
   extract.py           phase 1: SharePoint → out/extract
   transform.py         pure SharePoint → Liferay mappings (unit-tested)
+  libraries.py         document libraries → Documents and Media (pure)
+  taxonomy.py          term sets → vocabularies and categories (pure)
   plan.py              phase 2: out/plan.json + plan.md
   liferay.py           Liferay headless client (dry-run aware)
   load.py              phase 3: idempotent loader
@@ -103,12 +114,17 @@ mapping.example.yaml   per-site overrides
 
 ## Scope
 
-Included: modern site pages, custom lists (and their attachments), users, SharePoint and Entra groups,
-site-level permissions, and list- and item-level unique permissions.
+Included: modern site pages, news posts, custom lists (and their attachments), document libraries
+(folders, files, metadata), managed metadata, users, SharePoint and Entra groups, site-level permissions,
+unique permissions on lists, items, libraries, folders and files, and Created/Modified/Author values.
 
-Not included, but listed as manual follow-ups: document libraries (use Liferay's Documents and Media
-bulk import or a separate DAM migration), classic wiki/publishing pages, SPFx and third-party web parts,
-Power Automate flows, list views and formatting, version history, and page-level unique permissions.
+Flagged in `plan.md` as manual follow-ups: web parts other than text and image, list view filters,
+validation formulas, calculated columns, content approval (workflow), and page-level unique permissions.
+
+Not included: version history (only the current version of each item and file), Power Automate flows and
+Power Apps forms (rebuild them as object actions and layouts; see Chapter 7), classic wiki/publishing
+pages, hub sites and multiple site collections in one run, search configuration, site theming, sharing
+links, and retention or sensitivity labels.
 
 ## Status
 

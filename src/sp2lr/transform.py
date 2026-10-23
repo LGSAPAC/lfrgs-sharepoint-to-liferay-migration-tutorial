@@ -63,7 +63,8 @@ def pascal(text: str, max_len: int = 41) -> str:
 
 def camel(text: str, max_len: int = 41) -> str:
     p = pascal(text, max_len)
-    name = p[:1].lower() + p[1:]
+    # Lower-case a leading acronym too: HR -> hr, HRPolicy -> hrPolicy, LaunchDate -> launchDate
+    name = re.sub(r"^[A-Z]+(?=[A-Z][a-z])|^[A-Z]+$|^[A-Z]", lambda m: m.group(0).lower(), p)
     if name.lower() in RESERVED_FIELD_NAMES:
         name = "sp" + p
     return name[:max_len]
@@ -95,6 +96,7 @@ def map_field(f: dict, list_id: str) -> dict | None:
             "externalReferenceCode": f"sp-field-{f['Id']}"}
     picklist = None
     lookup = None
+    taxonomy = None
 
     if kind == "Text":
         of = {**base, "businessType": "Text", "DBType": "String"}
@@ -143,6 +145,11 @@ def map_field(f: dict, list_id: str) -> dict | None:
         # People are stored as e-mail addresses; Liferay users carry the same e-mail.
         of = {**base, "businessType": "LongText" if kind == "UserMulti" else "Text",
               "DBType": "Clob" if kind == "UserMulti" else "String"}
+    elif kind in ("TaxonomyFieldType", "TaxonomyFieldTypeMulti"):
+        # Managed metadata becomes Liferay categories (taxonomyCategoryIds), not a field
+        taxonomy = {"termSetId": (f.get("TermSetId") or "").lower(), "multi": kind.endswith("Multi"),
+                    "label": f.get("Title") or sp_name}
+        of = None
     elif kind in ("Lookup", "LookupMulti"):
         # Becomes an object relationship, created after all definitions exist.
         lookup = {"targetListId": (f.get("LookupList") or "").strip("{}").lower(),
@@ -152,7 +159,51 @@ def map_field(f: dict, list_id: str) -> dict | None:
     else:
         return None
     return {"sp": sp_name, "kind": kind, "name": name, "objectField": of,
-            "picklist": picklist, "lookup": lookup}
+            "picklist": picklist, "lookup": lookup, "taxonomy": taxonomy}
+
+
+# ----------------------------------------------------------- audit (who/when)
+
+AUDIT_FIELDS = [
+    # (SharePoint item key, Liferay field, kind, label, businessType, DBType)
+    ("Created", "spCreated", "AuditDate", "Created (SharePoint)", "DateTime", "DateTime"),
+    ("Modified", "spModified", "AuditDate", "Modified (SharePoint)", "DateTime", "DateTime"),
+    ("Author", "spCreatedBy", "AuditUser", "Created by (SharePoint)", "Text", "String"),
+    ("Editor", "spModifiedBy", "AuditUser", "Modified by (SharePoint)", "Text", "String"),
+]
+
+
+def audit_mappings() -> list[dict]:
+    """Field mappings that keep SharePoint's Created/Modified/Author/Editor as explicit fields.
+
+    Liferay sets dateCreated/dateModified/creator itself, so the original values
+    are preserved next to them (and optionally via impersonation, see load.py).
+    """
+    return [{"sp": sp, "kind": kind, "name": name, "picklist": None, "lookup": None, "taxonomy": None,
+             "objectField": {"name": name, "label": {"en_US": label}, "businessType": bt, "DBType": db,
+                             "required": False, "indexed": True, "indexedAsKeyword": False,
+                             "indexedLanguageId": ""}}
+            for sp, name, kind, label, bt, db in AUDIT_FIELDS]
+
+
+def iso_utc(value: str | None) -> str | None:
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def term_values(item: dict, sp_field: str) -> list[dict]:
+    """Managed metadata values of an item: [{"guid", "label"}]."""
+    v = item.get(sp_field)
+    if not v:
+        return []
+    vals = v.get("results", v) if isinstance(v, dict) and "results" in v else v
+    vals = vals if isinstance(vals, list) else [vals]
+    out = []
+    for x in vals:
+        if isinstance(x, dict) and x.get("TermGuid"):
+            out.append({"guid": x["TermGuid"].lower(), "label": x.get("Label") or ""})
+    return out
 
 
 _APP_TITLE = re.compile(r"request|ticket|issue|task|approval|registration|booking|reservation|"
@@ -292,6 +343,9 @@ def plan_list(list_info: dict, fields: list[dict], max_attachments: int = 0,
             m["objectField"].setdefault("objectFieldSettings", []).extend(extras)
         has_title |= m["name"] == "title"
         mapped.append(m)
+    if overrides.get("audit", True):
+        taken = {m["name"] for m in mapped}
+        mapped += [a for a in audit_mappings() if a["name"] not in taken]
     if not has_title:
         mapped.insert(0, {"sp": "Title", "kind": "Text", "name": "title", "picklist": None, "lookup": None,
                           "objectField": {"name": "title", "label": {"en_US": "Title"}, "businessType": "Text",
@@ -334,12 +388,16 @@ def plan_list(list_info: dict, fields: list[dict], max_attachments: int = 0,
     }
     if target == "cms":
         definition["objectFolderExternalReferenceCode"] = "L_CMS_CONTENT_STRUCTURES"
+    taxonomy_fields = [{"field": m["sp"], **m["taxonomy"]} for m in mapped if m.get("taxonomy")]
+    if taxonomy_fields:
+        definition["enableCategorization"] = True
     return {
         "listId": list_id, "listTitle": list_info["Title"], "target": target,
         "definition": definition, "fields": mapped, "skipped": skipped,
         "picklists": [m["picklist"] for m in mapped if m["picklist"]],
         "lookups": [{"field": m["sp"], **m["lookup"]} for m in mapped if m["lookup"]],
         "attachmentFields": [a["name"] for a in attachments],
+        "taxonomyFields": taxonomy_fields,
     }
 
 
@@ -373,6 +431,10 @@ def convert_value(m: dict, value: Any) -> Any:
         return value.get("Url") if isinstance(value, dict) else value
     if kind == "User":
         return value.get("EMail") or value.get("Title") if isinstance(value, dict) else None
+    if kind == "AuditDate":
+        return iso_utc(value)
+    if kind == "AuditUser":
+        return (value.get("EMail") or value.get("Title")) if isinstance(value, dict) else None
     if kind == "UserMulti":
         vals = value.get("results", []) if isinstance(value, dict) and "results" in value else value
         return ", ".join(v.get("EMail") or v.get("Title", "") for v in vals or [])
@@ -524,6 +586,25 @@ def page_to_site_page(page: dict, locale: str, url_map: dict[str, str],
     return body, unmigrated
 
 
+def page_to_html(page: dict, url_map: dict[str, str], page_links: dict[str, str]) -> str:
+    """Flatten a page canvas into one HTML body (news posts -> blog article body)."""
+    parts = []
+    for wp in _iter_webparts(page):
+        if wp.get("@odata.type") == "#microsoft.graph.textWebPart":
+            parts.append(rewrite_html(wp.get("innerHtml") or "", url_map, page_links))
+        elif wp.get("webPartType") == IMAGE_WEBPART:
+            data = wp.get("data") or {}
+            srcs = (data.get("serverProcessedContent") or {}).get("imageSources", [])
+            if srcs:
+                alt = html.escape((data.get("properties") or {}).get("altText") or "")
+                parts.append(f'<p><img src="{url_map.get(srcs[0]["value"], srcs[0]["value"])}" alt="{alt}" /></p>')
+    return "\n".join(p for p in parts if p.strip())
+
+
+def is_news(page: dict) -> bool:
+    return page.get("promotionKind") == "newsPost"
+
+
 def page_link_map(pages: list[dict], sp_site_path: str, lr_site_prefix: str) -> dict[str, str]:
     """Map /sites/x/SitePages/Foo.aspx (and absolute forms) to /web/<site>/foo."""
     out = {}
@@ -579,9 +660,14 @@ LEVEL_ENTRY_ACTIONS = {
 }
 
 
+def role_scope(target: str) -> str:
+    """Where a migrated record lives: 'cms' (the Space) or 'site' (Objects, Documents, pages)."""
+    return "cms" if target == "cms" else "site"
+
+
 def principal_role_name(principal_name: str, target: str) -> str:
-    """Role used for migrated item permissions: depot role for CMS, site role for Objects."""
-    prefix = "SP Principal - " if target == "cms" else "SP Site Principal - "
+    """Role used for migrated item permissions: depot role in the Space, site role in the site."""
+    prefix = "SP Principal - " if role_scope(target) == "cms" else "SP Site Principal - "
     return f"{prefix}{principal_name}"[:75]
 
 

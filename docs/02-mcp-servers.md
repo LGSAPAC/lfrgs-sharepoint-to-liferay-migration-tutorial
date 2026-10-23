@@ -75,6 +75,8 @@ Tools exposed:
 | `get_site`, `search_sites` | Site and web properties, tenant site search |
 | `list_site_pages`, `get_page_content`, `get_navigation` | Modern pages, canvas layout (sections → columns → web parts), Quick Launch and Top nav |
 | `list_lists`, `get_list_schema`, `get_list_items` | Lists, migratable columns with a `supported` flag, sample items |
+| `get_library_contents` | Folders and files of a document library, with metadata, author/editor and unique-permission flags |
+| `get_term_set` | A managed-metadata term set with its full term hierarchy |
 | `list_site_groups`, `list_site_users`, `get_entra_user` | SharePoint groups and members, decoded claims logins, Entra profiles |
 | `list_role_definitions`, `get_role_assignments`, `find_unique_permissions` | Permission levels, web/list/item role assignments, items that break inheritance |
 

@@ -1,4 +1,4 @@
-# 8. Permissions
+# 10. Permissions
 
 ```bash
 sp2lr load --phase permissions
@@ -13,7 +13,7 @@ SharePoint and Liferay model permissions differently, so read this chapter befor
 | Where | Web → list → item, inherited until broken | Site / Space membership + role; resource permissions per entry |
 | Granted by | Role assignment = principal + level on a securable | Role assigned to a user/user group in a site or space; actions granted to roles per resource |
 
-## 8.1 Site-level permissions
+## 10.1 Site-level permissions
 
 Each role assignment on the web becomes membership plus a role in both the **site** and the **space**:
 
@@ -46,7 +46,7 @@ structures have View disabled by default, so space members won't see entries oth
 > of the content structures ProductCatalog and Orders. Tell me which actions from chapter 8 are
 > missing."*
 
-## 8.2 Unique (broken-inheritance) permissions
+## 10.2 Unique (broken-inheritance) permissions
 
 For each list with unique permissions, and each item with unique permissions, the loader:
 
@@ -74,7 +74,7 @@ PUT /o/c/orders/{entryId}/permissions
 
 A list-level unique assignment is applied to every entry of that list, unless an item has its own.
 
-## 8.3 What isn't migrated automatically
+## 10.3 What isn't migrated automatically
 
 * **Page-level unique permissions.** They're listed as manual follow-ups. Set them in *Site Builder →
   Pages → ⋮ → Permissions*.
@@ -85,13 +85,41 @@ A list-level unique assignment is applied to every entry of that list, unless an
 * **Deny permissions.** SharePoint Online has no deny at site level. Liferay has none either, so nothing
   is lost.
 
-## 8.4 Security review checklist
+## 10.4 Documents and folders
+
+SharePoint permissions **inherit** down a library: a restricted folder hides everything inside it.
+Liferay permissions are **per resource** and don't flow down to existing children. So for each
+library, folder or file that broke inheritance, the planner works out every folder and document
+whose nearest unique-permission ancestor it is, and the `permissions` phase sets explicit
+permissions on each one:
+
+```json
+PUT /o/headless-delivery/v1.0/document-folders/{id}/permissions
+PUT /o/headless-delivery/v1.0/documents/{id}/permissions
+[ {"roleName": "Site Member", "actionIds": []}, {"roleName": "Guest", "actionIds": []}, {"roleName": "User", "actionIds": []},
+  {"roleName": "SP Site Principal - SP Marketing Owners", "actionIds": ["VIEW","UPDATE","DELETE","PERMISSIONS","ADD_DOCUMENT","ADD_SUBFOLDER"]},
+  {"roleName": "SP Site Principal - SP Marketing Members", "actionIds": ["VIEW"]} ]
+```
+
+| SharePoint level | Document actions | Extra folder actions |
+|---|---|---|
+| Full Control | VIEW, UPDATE, DELETE, PERMISSIONS | ADD_DOCUMENT, ADD_SUBFOLDER |
+| Design, Edit | VIEW, UPDATE, DELETE | ADD_DOCUMENT, ADD_SUBFOLDER |
+| Contribute | VIEW, UPDATE | ADD_DOCUMENT |
+| Read, View Only | VIEW | |
+
+Documents and Media live in the site, so these use the site role `SP Site Principal - <group>`.
+New files added later in Liferay get the folder's default permissions, not these. If a restricted
+folder will keep receiving files, also set that folder's default permissions in the UI.
+
+## 10.5 Security review checklist
 
 - [ ] Every user in `SP <Owners>` holds Site Owner in the site and Asset Library Owner in the Space
 - [ ] A user who was Read-only in SharePoint can view but not edit pages and entries
 - [ ] An entry that was restricted in SharePoint is invisible to a regular member (test with an
       impersonated user: *Control Panel → Users → ⋮ → Impersonate User*)
+- [ ] A file in a restricted SharePoint folder is invisible to a regular site member
 - [ ] Guests (`#EXT#`) only see what they saw before
 - [ ] The migration account is disabled or demoted after cutover
 
-Next: [9. Validation and cutover](09-validation-and-cutover.md)
+Next: [11. Validation and cutover](11-validation-and-cutover.md)

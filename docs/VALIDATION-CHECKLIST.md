@@ -56,6 +56,17 @@ Use the API Explorer (`http://localhost:8080/o/api`) and the Liferay MCP server'
 | L20 | `panelCategoryKey: site_administration.content` puts site-scoped Objects in the site menu | `transform.py: plan_list` | ☐ |
 | L21 | Which classic Object features (views, validations, actions, state manager) also work on CMS content structures in 2026.Q3 | docs/06 table | ☐ |
 | L22 | SP REST `/views?$expand=ViewFields` returns `ViewFields.Items` with `odata=nometadata` | `sharepoint.py: list_views` | ☐ |
+| L23 | `POST /o/headless-admin-taxonomy/v1.0/sites/{globalSiteId}/taxonomy-vocabularies` with `externalReferenceCode`, and `GET …/taxonomy-vocabularies/by-external-reference-code/{erc}` | `liferay.py: create_vocabulary, vocabulary` | ☐ |
+| L24 | Child categories via `POST /taxonomy-categories/{parentId}/taxonomy-categories`; lookup via `…/taxonomy-vocabularies/{id}/taxonomy-categories/by-external-reference-code/{erc}` | `liferay.py: create_category, category` | ☐ |
+| L25 | Object entries accept `taxonomyCategoryIds` (with `enableCategorization: true`), including global-site categories on depot-scoped CMS entries | `load.py: phase_entries` | ☐ |
+| L26 | `POST /o/data-engine/v2.0/sites/{id}/data-definitions/by-content-type/document-library` creates a usable **Document Type**; field types `select`, `date`, `date_time`, `checkbox`, `numeric`, `rich_text` | `liferay.py: create_document_type` (falls back to description) | ☐ |
+| L27 | Document upload accepts `documentType: {name, contentFields: [{name, contentFieldValue: {data}}]}`, `externalReferenceCode` and `taxonomyCategoryIds` in the `document` part | `load.py: phase_documents` (retries without the type) | ☐ |
+| L28 | `PUT /o/headless-delivery/v1.0/documents/{id}/permissions` and `/document-folders/{id}/permissions` | `load.py: phase_permissions` | ☐ |
+| L29 | `?doAsUserId=<userId>` on headless create calls makes that user the `creator` (migration user has Impersonate) | `load.py: _as_author` | ☐ |
+| L30 | Blog posting accepts `datePublished` in the past, `externalReferenceCode` and `friendlyUrlPath` | `load.py: phase_news` | ☐ |
+| L31 | Graph `termStore/sets/{id}` + `/children` works with delegated `TermStore.Read.All` for site-collection and global term sets | `sharepoint.py: term_set` | ☐ |
+| L32 | SP REST taxonomy column values come back as `{Label, TermGuid, WssId}` (single) / arrays (multi) with `odata=nometadata` | `transform.py: term_values` | ☐ |
+| L33 | Streaming download of files over 100 MB via `GetFileByServerRelativeUrl(…)/$value` | `sharepoint.py: download_to` | ☐ |
 
 ## Pages
 
@@ -77,6 +88,9 @@ Seed a test SharePoint site with:
   * *Orders* (lookup to products, person "Owner", number, multi-choice, yes/no, choice "Order Status"
     with a default value, two views, one with a filter), which should auto-classify as **Objects**
 * 1 item in *Orders* with unique permissions (Owners only)
+* 1 document library *Policies* with a sub-folder *HR* that has unique permissions, 3 files, a Choice
+  column, a Date column and a managed-metadata column bound to a term set with a 2-level hierarchy
+* 1 news post (published a few days earlier)
 * 3 pages: Home (two columns, text + Quick links), About Us (image), News article
 * Owners / Members / Visitors groups, with one Entra security group nested in Members
 

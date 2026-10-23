@@ -43,7 +43,9 @@ def test_plan(extract_dir):
     assert d["scope"] == "depot" and d["objectFolderExternalReferenceCode"] == "L_CMS_CONTENT_STRUCTURES"
     types = {f["name"]: f["businessType"] for f in d["objectFields"]}
     assert types == {"title": "Text", "price": "PrecisionDecimal", "category": "Picklist",
-                     "launchDate": "Date", "description": "RichText", "spStatus": "Text"}
+                     "launchDate": "Date", "description": "RichText", "spStatus": "Text",
+                     "spCreated": "DateTime", "spModified": "DateTime", "spCreatedBy": "Text", "spModifiedBy": "Text"}
+    assert d["enableCategorization"] is True  # managed metadata column -> categories
     assert products["skipped"][0]["field"] == "Calc"
 
     orders = next(lp for lp in plan["lists"] if lp["listId"] == ORDERS)
@@ -66,7 +68,7 @@ def test_auto_target_per_use_case(extract_dir):
     assert "objectFolderExternalReferenceCode" not in orders["definition"]
     assert any("status" in r for r in orders["classification"]["reasons"])
     owners = next(p for p in plan["principals"] if p["name"] == "SP Marketing Owners")
-    assert owners["roleScopes"] == ["objects"]
+    assert owners["roleScopes"] == ["site"]
 
     # mapping.yaml always wins
     forced = build_plan(extract_dir, {"lists": {"overrides": {"Orders": {"target": "cms"}}}})

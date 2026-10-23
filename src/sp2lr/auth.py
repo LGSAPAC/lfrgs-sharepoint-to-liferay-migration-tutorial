@@ -25,6 +25,7 @@ GRAPH_SCOPES_DELEGATED = [
     "https://graph.microsoft.com/Sites.Read.All",
     "https://graph.microsoft.com/User.Read.All",
     "https://graph.microsoft.com/GroupMember.Read.All",
+    "https://graph.microsoft.com/TermStore.Read.All",
 ]
 
 
