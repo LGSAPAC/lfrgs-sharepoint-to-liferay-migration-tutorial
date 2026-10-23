@@ -76,7 +76,15 @@ EXTRACT = {
              _field("g4", "Qty", "Quantity", "Number", Decimals=0),
              _field("g5", "Tags", "Tags", "MultiChoice", Choices=["Urgent", "Gift"]),
              _field("g6", "Shipped", "Shipped", "Boolean"),
-         ], "itemCount": 2},
+             _field("g7", "OrderStatus", "Order Status", "Choice", Choices=["New", "Shipped"], DefaultValue="New"),
+         ],
+         "views": [
+             {"Title": "All Items", "DefaultView": True, "fields": ["LinkTitle", "Product", "Qty", "OrderStatus"],
+              "ViewQuery": '<OrderBy><FieldRef Ascending="FALSE" Name="Created" /></OrderBy>'},
+             {"Title": "Open orders", "DefaultView": False, "fields": ["LinkTitle", "Owner"],
+              "ViewQuery": '<Where><Eq><FieldRef Name="Shipped"/><Value Type="Boolean">0</Value></Eq></Where>'},
+         ],
+         "itemCount": 2},
     ],
     "lists/" + PRODUCTS + ".items.json": [
         {"Id": 1, "Title": "Widget", "Price": 9.5, "Category": "Hardware", "Launch_x0020_Date": "2026-01-15T08:00:00Z",

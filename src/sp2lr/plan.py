@@ -135,7 +135,7 @@ def build_plan(out: Path, mapping: dict) -> dict:
 
     # ----------------------------------------------------------------- lists
     lcfg = mapping.get("lists") or {}
-    default_target = lcfg.get("target", "cms")
+    default_target = lcfg.get("target", "auto")
     plan_lists = []
     for entry in lists:
         info, fields = entry["list"], entry["fields"]
@@ -145,7 +145,40 @@ def build_plan(out: Path, mapping: dict) -> dict:
             continue
         items = json.loads((root / "lists" / f"{info['Id']}.items.json").read_text())
         max_att = max((len(i.get("_attachments", [])) for i in items), default=0)
-        lp = t.plan_list(info, fields, max_att, ov.get("target", default_target), ov)
+        has_unique = info["Id"] in perms["items"] or info["Id"] in perms["lists"]
+        classification = t.classify_list(info, fields, has_unique)
+        target = ov.get("target", default_target)
+        if target == "auto":
+            target = classification["target"]
+            decided_by = "auto"
+        else:
+            decided_by = "mapping.yaml" if "target" in ov else "lists.target"
+        lp = t.plan_list(info, fields, max_att, target, ov)
+        lp["classification"] = {**classification, "decidedBy": decided_by}
+
+        title = info["Title"]
+        if target == "objects":
+            lp["objectViews"], view_manual = t.views_to_object_views(entry.get("views", []), lp["fields"], locale)
+            report["manual"] += [f"List '{title}': {m}" for m in view_manual]
+        else:
+            lp["objectViews"] = []
+            if len(entry.get("views", [])) > 1:
+                report["manual"].append(
+                    f"List '{title}' has {len(entry['views'])} views; in the CMS, recreate them as "
+                    "filters/collections (object views apply to classic Objects only)")
+        if info.get("EnableModeration"):
+            report["manual"].append(
+                f"List '{title}' uses content approval: " +
+                ("assign a workflow to the object (Process Builder > Configuration)" if target == "objects"
+                 else "set the workflow on the content structure or override it on the Space"))
+        if info.get("EnableVersioning") and target == "objects":
+            report["warnings"].append(
+                f"List '{title}' keeps version history; classic Objects don't version entries (CMS structures do)")
+        for f in fields:
+            if f.get("ValidationFormula"):
+                report["manual"].append(
+                    f"List '{title}': column '{f.get('Title')}' validation {f['ValidationFormula']!r} -> "
+                    "add an object validation (Expression Builder)")
         for s in lp["skipped"]:
             report["warnings"].append(f"List '{info['Title']}': column {s['field']} not migrated ({s['reason']})")
         for lk in lp["lookups"]:
@@ -158,20 +191,24 @@ def build_plan(out: Path, mapping: dict) -> dict:
     # Unique list/item permissions -> entry-level grants
     entry_grants: dict[str, dict[str, list]] = {}
 
-    def grants_for(assignments: list[dict]) -> list[dict]:
+    def grants_for(assignments: list[dict], target: str) -> list[dict]:
         out = []
         for ra in assignments:
             p = principal_for(ra["Member"])
             level = t.strongest_level(ra.get("RoleDefinitionBindings", []))
             if p and level and level in t.LEVEL_ENTRY_ACTIONS:
                 p["needsRole"] = True
+                # CMS entries live in the Space (depot role); Objects live in the site (site role)
+                scopes = p.setdefault("roleScopes", [])
+                if target not in scopes:
+                    scopes.append(target)
                 out.append({"principal": p["erc"], "actions": t.LEVEL_ENTRY_ACTIONS[level]})
         return out
 
     for lp in plan_lists:
         lid = lp["listId"]
-        list_level = grants_for(perms["lists"].get(lid, [])) if lid in perms["lists"] else None
-        item_level = {iid: grants_for(ras) for iid, ras in perms["items"].get(lid, {}).items()}
+        list_level = grants_for(perms["lists"].get(lid, []), lp["target"]) if lid in perms["lists"] else None
+        item_level = {iid: grants_for(ras, lp["target"]) for iid, ras in perms["items"].get(lid, {}).items()}
         if list_level is not None or item_level:
             entry_grants[lid] = {"list": list_level, "items": item_level}
 
@@ -230,10 +267,18 @@ def render_plan_md(plan: dict) -> str:
         lines.append(f"| {names.get(g['principal'], g['principal'])} | {g['level']} | "
                      f"{g.get('siteRole') or 'Site Member'} | {g.get('spaceRole') or 'Asset Library Member'} |")
     lines += ["", "## Lists", ""]
+    lines += ["| SharePoint list | Target | Decided by | Why |", "|---|---|---|---|"]
+    for lp in plan["lists"]:
+        c = lp.get("classification", {})
+        label = "CMS content structure (Space)" if lp["target"] == "cms" else "Liferay Object (site)"
+        lines.append(f"| {lp['listTitle']} | {label} | {c.get('decidedBy', '-')} | {'; '.join(c.get('reasons', []))} |")
+    lines.append("")
     for lp in plan["lists"]:
         d = lp["definition"]
-        lines += [f"### {lp['listTitle']} -> `{d['name']}` ({lp['target']}, {lp['itemCount']} items)", "",
-                  "| SharePoint column | Type | Liferay field | Business type |", "|---|---|---|---|"]
+        lines += [f"### {lp['listTitle']} -> `{d['name']}` ({lp['target']}, {lp['itemCount']} items)", ""]
+        if lp.get("objectViews"):
+            lines += ["Object views: " + ", ".join(v["name"][next(iter(v["name"]))] for v in lp["objectViews"]), ""]
+        lines += ["| SharePoint column | Type | Liferay field | Business type |", "|---|---|---|---|"]
         for m in lp["fields"]:
             bt = m["objectField"]["businessType"] if m["objectField"] else ("Relationship (many-to-many)" if m["lookup"]["multi"] else "Relationship (one-to-many)")
             lines.append(f"| {m['sp']} | {m['kind']} | `{m['name']}` | {bt} |")

@@ -11,15 +11,17 @@ space:
   key: marketing-content
 
 lists:
-  # Default target for every custom list:
+  # Default target for every custom list (see docs/06-lists-cms-or-objects.md):
+  #   auto    -> score each list; content lists -> cms, process/app lists -> objects (reasons in plan.md)
   #   cms     -> content structure in the CMS Space (editorial content, reused across sites)
-  #   objects -> classic site-scoped Liferay Object (app-like data, forms, workflows, APIs)
-  target: cms
+  #   objects -> site-scoped Liferay Object (views, validations, actions, workflow, Forms)
+  target: auto
   overrides:
-    "Product Catalog":
+    "Product Catalog":       # Scenario A: published content
+      target: cms
       name: Product          # object definition name (PascalCase)
       pluralLabel: Products  # drives the REST path /o/c/products
-    "Support Requests":
+    "Support Requests":      # Scenario B: a business process
       target: objects
       skipFields: [LegacyTicketNo]
     "Old Archive":

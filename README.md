@@ -9,7 +9,8 @@ Liferay Objects):
 | Site (team / communication site) | **Site** for pages + a connected CMS **Space** for content |
 | Modern site pages (`SitePages/*.aspx`) | **Content pages** built from fragments, plus a navigation menu |
 | Images on pages | **Documents and Media** files in the site, links rewritten |
-| Custom lists | CMS **content structures** (depot-scoped object definitions) or classic **Objects** |
+| Custom lists (content: catalogs, FAQs, policies) | CMS **content structures** in a Space (depot-scoped object definitions) |
+| Custom lists (apps: requests, orders, approvals) | Liferay **Objects** in the site, with **object views** from list views |
 | List items + attachments | Structure **entries** (object entries) with Attachment fields |
 | Choice / lookup columns | **Picklists** / object **relationships** |
 | Entra ID users | Liferay **user accounts** keyed by Entra object ID (sign in with SSO) |
@@ -53,7 +54,7 @@ plans and verifies. The CLI copies the records.
 | 3 | [Discovery and inventory](docs/03-discovery.md) | Inventory the live site through MCP and extract it |
 | 4 | [Mapping and plan](docs/04-mapping-and-plan.md) | Decide CMS vs Objects, field mappings, `mapping.yaml`, review `plan.md` |
 | 5 | [Users and groups](docs/05-users-and-groups.md) | Entra users → Liferay users, SharePoint groups → user groups |
-| 6 | [Lists to CMS structures](docs/06-lists-to-cms.md) | Lists → content structures, items → entries, lookups → relationships |
+| 6 | [Lists: CMS structures or Objects](docs/06-lists-cms-or-objects.md) | Two scenarios: content lists → CMS structures, app lists → Objects (views, validations, actions) |
 | 7 | [Pages](docs/07-pages.md) | Modern pages → content pages, images, navigation |
 | 8 | [Permissions](docs/08-permissions.md) | Permission levels → roles, unique permissions → entry permissions |
 | 9 | [Validation and cutover](docs/09-validation-and-cutover.md) | Reconcile, agent-assisted spot checks, delta re-runs, cutover |

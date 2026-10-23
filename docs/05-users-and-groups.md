@@ -84,4 +84,4 @@ The phase also creates two custom roles that Edit and Contribute map to (see [Ch
 > users in each. Compare with `list_site_groups` from the sharepoint MCP server and flag any
 > difference in membership counts.
 
-Next: [6. Lists to CMS structures](06-lists-to-cms.md)
+Next: [6. Lists: CMS structures or Objects](06-lists-cms-or-objects.md)

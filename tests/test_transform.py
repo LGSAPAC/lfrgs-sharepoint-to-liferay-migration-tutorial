@@ -52,6 +52,41 @@ def test_plan(extract_dir):
     assert (extract_dir / "plan.md").exists()
 
 
+def test_auto_target_per_use_case(extract_dir):
+    plan = build_plan(extract_dir, {})
+    by_id = {lp["listId"]: lp for lp in plan["lists"]}
+    # Product Catalog = editorial content -> CMS structure in the Space
+    assert by_id[PRODUCTS]["target"] == "cms"
+    assert by_id[PRODUCTS]["definition"]["scope"] == "depot"
+    assert by_id[PRODUCTS]["classification"]["decidedBy"] == "auto"
+    # Orders = business process (status, owner, row-level security) -> classic site Object
+    orders = by_id[ORDERS]
+    assert orders["target"] == "objects"
+    assert orders["definition"]["scope"] == "site"
+    assert "objectFolderExternalReferenceCode" not in orders["definition"]
+    assert any("status" in r for r in orders["classification"]["reasons"])
+    owners = next(p for p in plan["principals"] if p["name"] == "SP Marketing Owners")
+    assert owners["roleScopes"] == ["objects"]
+
+    # mapping.yaml always wins
+    forced = build_plan(extract_dir, {"lists": {"overrides": {"Orders": {"target": "cms"}}}})
+    assert next(lp for lp in forced["lists"] if lp["listId"] == ORDERS)["classification"]["decidedBy"] == "mapping.yaml"
+
+
+def test_object_views_and_field_extras(extract_dir):
+    plan = build_plan(extract_dir, {})
+    orders = next(lp for lp in plan["lists"] if lp["listId"] == ORDERS)
+    all_items, open_orders = orders["objectViews"]
+    assert all_items["defaultObjectView"] is True
+    assert [c["objectFieldName"] for c in all_items["objectViewColumns"]] == ["title", "quantity", "orderStatus"]
+    assert all_items["objectViewSortColumns"] == [{"objectFieldName": "dateCreated", "priority": 0, "sortOrder": "desc"}]
+    assert any("Open orders" in m and "filter" in m for m in plan["report"]["manual"])
+    status = next(f for f in orders["definition"]["objectFields"] if f["name"] == "orderStatus")
+    assert {"name": "defaultValue", "value": "new"} in status["objectFieldSettings"]
+    # CMS lists never get object views
+    assert next(lp for lp in plan["lists"] if lp["listId"] == PRODUCTS)["objectViews"] == []
+
+
 def test_entries(extract_dir):
     plan = build_plan(extract_dir, {})
     orders = next(lp for lp in plan["lists"] if lp["listId"] == ORDERS)
@@ -94,4 +129,10 @@ def test_dry_run_load(extract_dir, monkeypatch):
     assert sum(p == "/o/object-admin/v1.0/object-definitions" for p in paths) == 2
     assert any("/object-relationships" in p for p in paths)
     assert sum("/by-external-reference-code/sp-item-" in p for p in paths) == 4
-    assert any(p.endswith("/permissions") and c["method"] == "PUT" for p, c in zip(paths, calls))
+    assert sum(p.endswith("/object-views") for p in paths) == 2  # Orders is an Object
+    entry_perms = [c for c in calls if c["method"] == "PUT" and "/permissions" in c["path"]
+                   and c["path"].split("/")[-2].isdigit()]
+    assert entry_perms and any(b["roleName"] == "SP Site Principal - SP Marketing Owners"
+                               for b in entry_perms[0]["body"])
+    # Orders entries go to the site scope, Product Catalog entries to the Space
+    assert any("/scopes/" in p and "sp-item-" + ORDERS in p for p in paths)

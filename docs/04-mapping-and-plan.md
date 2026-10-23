@@ -25,13 +25,23 @@ SharePoint site  ──►  Liferay Site  "Marketing"            pages, navigati
 
 ### CMS structure or classic Object?
 
-Both are object definitions, and `sp2lr` can produce either one per list:
+Both are object definitions, and `sp2lr` decides per list. With `lists.target: auto` (the
+default) it scores each list and explains why in `plan.md`. [Chapter 6](06-lists-cms-or-objects.md)
+walks through both scenarios end to end.
 
-| Use a **CMS content structure** (`target: cms`, default) when… | Use a **classic Object** (`target: objects`) when… |
+| **CMS content structure** (`target: cms`) | **Liferay Object** (`target: objects`) |
 |---|---|
-| The list holds editorial content: products, FAQs, policies, news, people directory | The list is an application: requests, approvals, registrations, inventory |
+| The list holds editorial content: products, FAQs, policies, news, people directory | The list runs a process: requests, orders, approvals, registrations, inventory |
 | Content should be reused by several sites | Data is site-specific and edited through forms |
-| Editors work in the CMS UI (spaces, folders, translation, preview) | You need object actions, validations, custom views or Liferay Forms |
+| Editors work in the CMS UI (spaces, folders, translation, preview, versioning) | You need object views, layouts, validations, actions, state managers or Liferay Forms |
+| Lives in the Space | Lives in the site. SharePoint list views become object views |
+
+So the target model is usually:
+
+```
+SharePoint site  ──►  Liferay Site  "Marketing"            pages, navigation, images, Objects for app lists
+                 └─►  CMS Space     "Marketing Content"    content lists as structures + entries
+```
 
 ## 4.2 Field mapping
 
@@ -80,7 +90,7 @@ Every decision that isn't mechanical lives in `mapping.yaml`. See
 
 ```yaml
 lists:
-  target: cms
+  target: auto          # auto | cms | objects
   overrides:
     "Support Requests": { target: objects }
     "Product Catalog":  { name: Product, pluralLabel: Products, skipFields: [LegacySku] }

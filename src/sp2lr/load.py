@@ -117,11 +117,12 @@ class Loader:
             member_ids = [users[e] for e in p["members"] if e in users]
             if member_ids:
                 self._try(f"members of {p['name']}", self.lr.add_users_to_group, ug["id"], member_ids)
-            if p.get("needsRole"):
-                rname = f"SP Principal - {p['name']}"[:75]
-                r = self._try(f"role {rname}", self.lr.ensure_role, rname, "depot",
+            for target in p.get("roleScopes", []):
+                rname = t.principal_role_name(p["name"], target)
+                rtype = "depot" if target == "cms" else "site"
+                r = self._try(f"role {rname}", self.lr.ensure_role, rname, rtype,
                               "Used for migrated SharePoint item-level permissions",
-                              manual=f"Create depot role '{rname}'")
+                              manual=f"Create {rtype} role '{rname}'")
                 if r:
                     roles[rname] = r["id"]
 
@@ -130,10 +131,10 @@ class Loader:
             p = next(x for x in self.plan["principals"] if x["erc"] == g["principal"])
             for group_id, role_name in ((site_id, g.get("siteRole")), (space_id, g.get("spaceRole"))):
                 self._grant(p, group_id, role_name)
-        # Principals that only appear on item permissions still need space membership
+        # Principals that appear on item permissions get their role where the entries live
         for p in self.plan["principals"]:
-            if p.get("needsRole"):
-                self._grant(p, space_id, f"SP Principal - {p['name']}"[:75])
+            for target in p.get("roleScopes", []):
+                self._grant(p, space_id if target == "cms" else site_id, t.principal_role_name(p["name"], target))
 
     def _role_id(self, name: str) -> int | None:
         roles = self.state.setdefault("roles", {})
@@ -185,10 +186,17 @@ class Loader:
             od = (self.lr.get(f"/o/object-admin/v1.0/object-definitions/{od['id']}") if not self.lr.dry_run else od) or od
             defs[lp["listId"]] = {"id": od["id"], "erc": body["externalReferenceCode"], "name": body["name"],
                                   "restContextPath": od.get("restContextPath") or f"/o/c/{body['name'].lower()}s"}
-            log.info("Structure %s -> %s (%s)", body["name"], od["id"], defs[lp["listId"]]["restContextPath"])
-            self.manual.append(
-                f"Grant VIEW on structure '{body['label']['en_US']}' to the roles that should read it "
-                "(CMS > Content Structures > Actions > Permissions). Custom structures have VIEW disabled by default.")
+            log.info("%s %s -> %s (%s)", "Structure" if lp["target"] == "cms" else "Object",
+                     body["name"], od["id"], defs[lp["listId"]]["restContextPath"])
+            if lp["target"] == "cms":
+                self.manual.append(
+                    f"Grant VIEW on structure '{body['label']['en_US']}' to the roles that should read it "
+                    "(CMS > Content Structures > Actions > Permissions). Custom structures have VIEW disabled by default.")
+            else:
+                self._object_views(od["id"], lp)
+                self.manual.append(
+                    f"Review the layout of object '{body['label']['en_US']}' (Control Panel > Objects > "
+                    f"{body['name']} > Layouts) and grant the site roles access in Site Settings > Roles")
 
         # Relationships for lookup columns (after every definition exists)
         for lp in self.plan["lists"]:
@@ -212,6 +220,18 @@ class Loader:
                 if rel:
                     src.setdefault("relationships", {})[lk["field"]] = {
                         "name": lk["relationshipName"], "type": rtype, "target": lk["targetListId"]}
+
+    def _object_views(self, definition_id: int, lp: dict) -> None:
+        path = f"/o/object-admin/v1.0/object-definitions/{definition_id}/object-views"
+        existing = set()
+        if not self.lr.dry_run:
+            existing = {next(iter(v.get("name", {}).values()), "") for v in (self.lr.get(path) or {}).get("items", [])}
+        for view in lp.get("objectViews", []):
+            label = next(iter(view["name"].values()))
+            if label in existing:
+                continue
+            self._try(f"object view {label}", self.lr.call, "POST", path, view,
+                      manual=f"Create object view '{label}' on {lp['definition']['name']}")
 
     # --------------------------------------------------------------- entries
     def _scope_path(self, lp: dict) -> str:
@@ -336,10 +356,12 @@ class Loader:
         principals = {p["erc"]: p for p in self.plan["principals"]}
         # Roles that would otherwise inherit VIEW; cleared on entries that broke inheritance
         baseline = ["Asset Library Member", "Asset Library Connected Site Member", "Site Member", "Guest", "User"]
+        targets = {lp["listId"]: lp["target"] for lp in self.plan["lists"]}
         for list_id, eg in self.plan["entryGrants"].items():
             d = defs.get(list_id)
             if not d:
                 continue
+            target = targets.get(list_id, "cms")
             for sp_item_id, lr_id in entries.get(list_id, {}).items():
                 grants = eg["items"].get(sp_item_id, eg["list"])
                 if grants is None:
@@ -347,7 +369,7 @@ class Loader:
                 body = [{"roleName": r, "actionIds": []} for r in baseline]
                 for g in grants:
                     p = principals[g["principal"]]
-                    body.append({"roleName": f"SP Principal - {p['name']}"[:75], "actionIds": g["actions"]})
+                    body.append({"roleName": t.principal_role_name(p["name"], target), "actionIds": g["actions"]})
                 self._try(f"permissions {d['name']}/{lr_id}", self.lr.call, "PUT",
                           f"{d['restContextPath']}/{lr_id}/permissions", body)
         # Contributors may add entries to every migrated structure

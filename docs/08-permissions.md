@@ -50,8 +50,10 @@ structures have View disabled by default, so space members won't see entries oth
 
 For each list with unique permissions, and each item with unique permissions, the loader:
 
-1. Creates a depot role `SP Principal - <name>` for every principal that appears in those
-   assignments, and assigns it to that principal's user group in the Space.
+1. Creates a role for every principal that appears in those assignments, and assigns it to that
+   principal's user group where the entries live:
+   * CMS structure (Scenario A): depot role `SP Principal - <name>`, assigned in the **Space**
+   * Liferay Object (Scenario B): site role `SP Site Principal - <name>`, assigned in the **site**
 2. Replaces the entry's permissions. The baseline roles that would otherwise inherit access (*Asset
    Library Member*, *Asset Library Connected Site Member*, *Site Member*, *Guest*, *User*) get **no
    actions**, and each principal's role gets the actions of its level:

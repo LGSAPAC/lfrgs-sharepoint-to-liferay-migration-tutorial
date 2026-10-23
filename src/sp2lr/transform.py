@@ -155,6 +155,114 @@ def map_field(f: dict, list_id: str) -> dict | None:
             "picklist": picklist, "lookup": lookup}
 
 
+_APP_TITLE = re.compile(r"request|ticket|issue|task|approval|registration|booking|reservation|"
+                        r"incident|order|claim|expense|leave|onboarding|tracker|log\b|risk|action", re.I)
+_CONTENT_TITLE = re.compile(r"news|faq|product|catalog|policy|policies|article|directory|glossary|"
+                            r"announcement|event|knowledge|guide|resource|link|location|team|profile|testimonial", re.I)
+_STATUS_FIELD = re.compile(r"status|state|stage|priority|severity|outcome|decision", re.I)
+_PERSON_ROLE = re.compile(r"assign|owner|requester|request(ed)? by|approver|reviewer|manager|agent", re.I)
+
+
+def classify_list(list_info: dict, fields: list[dict], has_unique_items: bool = False) -> dict:
+    """Recommend 'cms' (editorial content) or 'objects' (business application data).
+
+    A transparent score, not magic: every signal that fired is returned as a
+    reason, and the result lands in plan.md where people can override it.
+    """
+    app, content = [], []
+    title = list_info.get("Title", "")
+    if _APP_TITLE.search(title):
+        app.append((2, f"list name '{title}' suggests a business process"))
+    if _CONTENT_TITLE.search(title):
+        content.append((2, f"list name '{title}' suggests published content"))
+    for f in fields:
+        kind, label = f["TypeAsString"], f.get("Title") or f["InternalName"]
+        if kind in ("Choice",) and _STATUS_FIELD.search(label):
+            app.append((2, f"'{label}' is a status/priority column"))
+        elif kind in ("User", "UserMulti") and _PERSON_ROLE.search(label):
+            app.append((2, f"'{label}' assigns work to people"))
+        elif kind == "DateTime" and re.search(r"due|deadline|sla|resolved|closed", label, re.I):
+            app.append((1, f"'{label}' tracks a deadline"))
+        elif kind == "Note" and f.get("RichText"):
+            content.append((2, f"'{label}' is rich text for readers"))
+        if f.get("ValidationFormula"):
+            app.append((1, f"'{label}' has a validation rule"))
+    if has_unique_items or list_info.get("HasUniqueRoleAssignments"):
+        app.append((2, "row-level (item) permissions"))
+    if list_info.get("ItemCount", 0) > 5000:
+        app.append((1, "high-volume list"))
+    a, c = sum(s for s, _ in app), sum(s for s, _ in content)
+    target = "objects" if a > c else "cms"
+    return {"target": target, "appScore": a, "contentScore": c,
+            "reasons": [r for _, r in (app if target == "objects" else content)] or
+                       ["no strong signal; defaulting to CMS content structure"]}
+
+
+# SharePoint view column (internal name) -> Liferay system field usable in object views
+SYSTEM_VIEW_FIELDS = {"ID": "id", "Created": "dateCreated", "Modified": "dateModified",
+                      "Author": "creator", "LinkTitle": "title", "LinkTitleNoMenu": "title", "Title": "title"}
+_FIELD_REF = re.compile(r"<FieldRef\b([^>]*)/?>", re.I)
+_ATTR = re.compile(r'(\w+)="([^"]*)"')
+
+
+def views_to_object_views(views: list[dict], plan_fields: list[dict], locale: str = "en_US") -> tuple[list[dict], list[str]]:
+    """Convert SharePoint list views to Liferay object views (classic Objects only).
+
+    Columns and sort order carry over. CAML <Where> filters are reported as
+    manual work: they rarely translate 1:1 to object view filters.
+    """
+    names = {m["sp"]: m["name"] for m in plan_fields if m.get("objectField")}
+    names.update(SYSTEM_VIEW_FIELDS)
+    out, manual = [], []
+    for v in views:
+        cols = []
+        for sp_name in v.get("fields", []):
+            lr = names.get(sp_name)
+            if lr and lr not in cols:
+                cols.append(lr)
+        if not cols:
+            continue
+        query = v.get("ViewQuery") or ""
+        order = re.search(r"<OrderBy[^>]*>(.*?)</OrderBy>", query, re.I | re.S)
+        sorts = []
+        for attrs in _FIELD_REF.findall(order.group(1) if order else ""):
+            a = dict(_ATTR.findall(attrs))
+            sp_name, asc = a.get("Name", ""), a.get("Ascending", "TRUE")
+            if sp_name in names:
+                sorts.append({"objectFieldName": names[sp_name], "priority": len(sorts),
+                              "sortOrder": "desc" if (asc or "").upper() == "FALSE" else "asc"})
+        if re.search(r"<Where>", query, re.I):
+            manual.append(f"View '{v['Title']}' has a filter; recreate it as an object view filter: {query[:200]}")
+        out.append({
+            "name": {locale: v["Title"]},
+            "defaultObjectView": bool(v.get("DefaultView")),
+            "objectViewColumns": [{"objectFieldName": n, "priority": i} for i, n in enumerate(cols)],
+            "objectViewSortColumns": sorts,
+            "objectViewFilterColumns": [],
+        })
+    return out, manual
+
+
+def field_extras(f: dict, m: dict) -> list[dict]:
+    """Unique-value and default-value settings for an object field (VERIFY: setting names)."""
+    of = m.get("objectField")
+    if not of:
+        return []
+    settings = []
+    if f.get("EnforceUniqueValues") and of["businessType"] in ("Text", "Integer", "LongInteger"):
+        settings.append({"name": "uniqueValues", "value": "true"})
+    default = f.get("DefaultValue")
+    if default and not str(default).startswith("["):  # skip [today], [me] tokens
+        if of["businessType"] == "Picklist":
+            default = picklist_key(default)
+        elif of["businessType"] == "Boolean":
+            default = "true" if str(default) in ("1", "true", "True") else "false"
+        if of["businessType"] in ("Text", "Picklist", "Boolean", "LongInteger", "Decimal", "PrecisionDecimal"):
+            settings += [{"name": "defaultValueType", "value": "inputAsValue"},
+                         {"name": "defaultValue", "value": str(default)}]
+    return settings
+
+
 def plan_list(list_info: dict, fields: list[dict], max_attachments: int = 0,
               target: str = "cms", overrides: dict | None = None) -> dict:
     """Build the object definition + field map for one SharePoint list.
@@ -174,8 +282,14 @@ def plan_list(list_info: dict, fields: list[dict], max_attachments: int = 0,
             continue
         m = map_field(f, list_id)
         if m is None:
-            skipped.append({"field": f["InternalName"], "reason": f"unsupported type {f['TypeAsString']}"})
+            reason = f"unsupported type {f['TypeAsString']}"
+            if f["TypeAsString"] == "Calculated" and f.get("Formula"):
+                reason += f" (formula {f['Formula']}; rebuild as a formula field)"
+            skipped.append({"field": f["InternalName"], "reason": reason})
             continue
+        extras = field_extras(f, m)
+        if extras:
+            m["objectField"].setdefault("objectFieldSettings", []).extend(extras)
         has_title |= m["name"] == "title"
         mapped.append(m)
     if not has_title:
@@ -463,6 +577,12 @@ LEVEL_ENTRY_ACTIONS = {
     "Read": ["VIEW"],
     "View Only": ["VIEW"],
 }
+
+
+def principal_role_name(principal_name: str, target: str) -> str:
+    """Role used for migrated item permissions: depot role for CMS, site role for Objects."""
+    prefix = "SP Principal - " if target == "cms" else "SP Site Principal - "
+    return f"{prefix}{principal_name}"[:75]
 
 
 def strongest_level(bindings: list[dict]) -> str | None:

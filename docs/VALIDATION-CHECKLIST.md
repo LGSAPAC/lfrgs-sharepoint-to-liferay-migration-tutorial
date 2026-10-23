@@ -50,6 +50,12 @@ Use the API Explorer (`http://localhost:8080/o/api`) and the Liferay MCP server'
 | L14 | `PUT /o/c/{plural}/{id}/permissions` accepts `[{"roleName", "actionIds"}]` and an empty `actionIds` removes inherited VIEW | `load.py: phase_permissions` | ☐ |
 | L15 | `PUT /o/c/{plural}/permissions` grants `ADD_OBJECT_ENTRY` for depot-scoped structures | `load.py: phase_permissions` (falls back to a manual step) | ☐ |
 | L16 | Granting VIEW on a content structure through the API (to remove the manual step) | currently a manual step | ☐ |
+| L17 | One-to-many relationship between a site-scoped Object and a depot-scoped CMS structure is accepted | `load.py: phase_structures` | ☐ |
+| L18 | `POST /o/object-admin/v1.0/object-definitions/{id}/object-views` with `objectViewColumns`/`objectViewSortColumns`; system fields `dateCreated`, `creator`, `id` allowed as columns | `load.py: _object_views` | ☐ |
+| L19 | Field settings `uniqueValues`, `defaultValueType`/`defaultValue` accepted on object fields (and whether CMS structures accept them too) | `transform.py: field_extras` | ☐ |
+| L20 | `panelCategoryKey: site_administration.content` puts site-scoped Objects in the site menu | `transform.py: plan_list` | ☐ |
+| L21 | Which classic Object features (views, validations, actions, state manager) also work on CMS content structures in 2026.Q3 | docs/06 table | ☐ |
+| L22 | SP REST `/views?$expand=ViewFields` returns `ViewFields.Items` with `odata=nometadata` | `sharepoint.py: list_views` | ☐ |
 
 ## Pages
 
@@ -66,8 +72,10 @@ Use the API Explorer (`http://localhost:8080/o/api`) and the Liferay MCP server'
 
 Seed a test SharePoint site with:
 
-* 2 custom lists: *Product Catalog* (text, currency, choice, date, rich text, attachment) and *Orders*
-  (lookup to products, person, number, multi-choice, yes/no)
+* 2 custom lists, one per scenario:
+  * *Product Catalog* (text, currency, choice, date, rich text, attachment), which should auto-classify as **CMS**
+  * *Orders* (lookup to products, person "Owner", number, multi-choice, yes/no, choice "Order Status"
+    with a default value, two views, one with a filter), which should auto-classify as **Objects**
 * 1 item in *Orders* with unique permissions (Owners only)
 * 3 pages: Home (two columns, text + Quick links), About Us (image), News article
 * Owners / Members / Visitors groups, with one Entra security group nested in Members

@@ -86,7 +86,12 @@ def extract(sp: SharePointClient, out: Path, with_attachments: bool = True) -> d
             for item in items:
                 if item.get("Attachments"):
                     item["_attachments"] = _download_attachments(sp, l, item, root)
-        lists_out.append({"list": l, "fields": fields, "itemCount": len(items)})
+        try:
+            views = sp.list_views(l["Id"])
+        except Exception as e:  # noqa: BLE001 - views are nice-to-have
+            log.warning("Could not read views of %s: %s", l["Title"], e)
+            views = []
+        lists_out.append({"list": l, "fields": fields, "views": views, "itemCount": len(items)})
         _write(root / "lists" / f"{l['Id']}.items.json", items)
         if l.get("HasUniqueRoleAssignments"):
             perms["lists"][l["Id"]] = sp.role_assignments("list", l["Id"])

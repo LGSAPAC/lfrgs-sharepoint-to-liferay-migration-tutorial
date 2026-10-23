@@ -132,7 +132,8 @@ class SharePointClient:
     # ----------------------------------------------------------------- lists
     def list_lists(self, include_hidden: bool = False) -> list[dict]:
         # BaseTemplate 100 = Custom List; 101 = Document Library (out of scope, see docs)
-        select = "Id,Title,Description,BaseTemplate,ItemCount,Hidden,HasUniqueRoleAssignments,EntityTypeName,RootFolder/ServerRelativeUrl"
+        select = ("Id,Title,Description,BaseTemplate,ItemCount,Hidden,HasUniqueRoleAssignments,EntityTypeName,"
+                  "EnableModeration,EnableVersioning,EnableAttachments,ContentTypesEnabled,RootFolder/ServerRelativeUrl")
         lists = self.rest(f"/web/lists?$select={select}&$expand=RootFolder").get("value", [])
         return [l for l in lists if include_hidden or not l.get("Hidden")]
 
@@ -140,7 +141,8 @@ class SharePointClient:
         select = (
             "Id,InternalName,Title,TypeAsString,Required,Hidden,ReadOnlyField,Description,"
             "Choices,LookupList,LookupField,AllowMultipleValues,RichText,DisplayFormat,"
-            "MaxLength,MinimumValue,MaximumValue,Decimals,Indexed,EnforceUniqueValues,FromBaseType,DefaultValue"
+            "MaxLength,MinimumValue,MaximumValue,Decimals,Indexed,EnforceUniqueValues,FromBaseType,DefaultValue,"
+            "ValidationFormula,ValidationMessage,Formula"
         )
         fields = self.rest(f"/web/lists(guid'{list_id}')/fields?$select={select}").get("value", [])
         out = []
@@ -170,6 +172,22 @@ class SharePointClient:
                 select.append(name)
         query = f"$top={top}&$select={','.join(select)}&$expand={','.join(sorted(expand))}"
         yield from self.rest_paged(f"/web/lists(guid'{list_id}')/items?{query}")
+
+    def list_views(self, list_id: str) -> list[dict]:
+        """Public views with their columns and CAML query (sorting/filtering)."""
+        views = self.rest(
+            f"/web/lists(guid'{list_id}')/views?$select=Id,Title,DefaultView,PersonalView,Hidden,ViewQuery,RowLimit"
+            "&$expand=ViewFields"
+        ).get("value", [])
+        out = []
+        for v in views:
+            if v.get("Hidden") or v.get("PersonalView"):
+                continue
+            fields = v.get("ViewFields") or {}
+            v["fields"] = fields.get("Items", []) if isinstance(fields, dict) else []
+            v.pop("ViewFields", None)
+            out.append(v)
+        return out
 
     def item_attachments(self, list_id: str, item_id: int) -> list[dict]:
         return self.rest(f"/web/lists(guid'{list_id}')/items({item_id})/AttachmentFiles").get("value", [])
