@@ -1,0 +1,45 @@
+# Liferay DXP 2026.Q3 for the migration tutorial.
+#
+#   1. Put your DXP activation key (XML) in docker/liferay/deploy/
+#   2. docker compose -f docker/docker-compose.yml up -d
+#   3. Wait for "Server startup in" in the logs, then open http://localhost:8080
+#
+# Uses PostgreSQL so it behaves like a real environment (Hypersonic is not
+# suitable for tens of thousands of object entries).
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: lportal
+      POSTGRES_USER: liferay
+      POSTGRES_PASSWORD: liferay
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U liferay -d lportal"]
+      interval: 5s
+      retries: 20
+
+  liferay:
+    # Pin the exact 2026.Q3 build you are validating against
+    image: liferay/dxp:${LIFERAY_TAG:-2026.q3.0}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      LIFERAY_JVM_OPTS: "-Xms2g -Xmx4g"
+      LIFERAY_JDBC_PERIOD_DEFAULT_PERIOD_DRIVER_UPPERCASEC_LASS_UPPERCASEN_AME: org.postgresql.Driver
+      LIFERAY_JDBC_PERIOD_DEFAULT_PERIOD_URL: jdbc:postgresql://postgres:5432/lportal
+      LIFERAY_JDBC_PERIOD_DEFAULT_PERIOD_USERNAME: liferay
+      LIFERAY_JDBC_PERIOD_DEFAULT_PERIOD_PASSWORD: liferay
+    volumes:
+      - ./liferay/files:/mnt/liferay/files
+      - ./liferay/deploy:/mnt/liferay/deploy
+      - liferay-data:/opt/liferay/data
+
+volumes:
+  pgdata:
+  liferay-data:

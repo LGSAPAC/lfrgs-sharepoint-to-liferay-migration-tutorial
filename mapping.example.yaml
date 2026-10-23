@@ -1,0 +1,48 @@
+# Per-site migration decisions. Copy to mapping.yaml; every key is optional.
+
+locale: en_US
+
+site:
+  name: Marketing            # Liferay site name (default: SharePoint site title)
+  key: marketing             # friendly URL -> /web/marketing (default: last segment of the SP site path)
+
+space:
+  name: Marketing Content    # CMS Space for migrated list content (default: "<site> Content")
+  key: marketing-content
+
+lists:
+  # Default target for every custom list:
+  #   cms     -> content structure in the CMS Space (editorial content, reused across sites)
+  #   objects -> classic site-scoped Liferay Object (app-like data, forms, workflows, APIs)
+  target: cms
+  overrides:
+    "Product Catalog":
+      name: Product          # object definition name (PascalCase)
+      pluralLabel: Products  # drives the REST path /o/c/products
+    "Support Requests":
+      target: objects
+      skipFields: [LegacyTicketNo]
+    "Old Archive":
+      skip: true
+
+pages:
+  skip: [Template.aspx]
+  navigationMenuName: SharePoint Navigation
+
+users:
+  skipDisabled: true
+  exclude:
+    - admin@contoso.onmicrosoft.com
+    - svc-sharepoint@contoso.com
+
+permissions:
+  # SharePoint permission level -> Liferay site role / space role.
+  # null role = membership only (Site Member / Asset Library Member can view).
+  levels:
+    Full Control: {siteRole: Site Owner, spaceRole: Asset Library Owner}
+    Design: {siteRole: Site Content Reviewer, spaceRole: Asset Library Administrator}
+    Edit: {siteRole: SP Contributor, spaceRole: SP Space Contributor}
+    Contribute: {siteRole: SP Contributor, spaceRole: SP Space Contributor}
+    Read: {siteRole: null, spaceRole: null}
+    # Custom levels from your tenant:
+    # Approve: {siteRole: Site Content Reviewer, spaceRole: Asset Library Content Reviewer}

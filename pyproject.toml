@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sp2lr"
+version = "0.1.0"
+description = "Migrate a SharePoint Online site (pages, users, permissions, lists) to Liferay DXP 2026.Q3 and the new CMS"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.27",
+  "msal>=1.28",
+  "mcp>=1.2",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+sp2lr = "sp2lr.cli:main"
+sharepoint-mcp = "sp2lr.mcp_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sp2lr"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

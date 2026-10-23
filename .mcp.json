@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "sharepoint": {
+      "type": "stdio",
+      "command": ".venv/bin/sharepoint-mcp",
+      "args": []
+    },
+    "liferay": {
+      "type": "http",
+      "url": "${LIFERAY_URL:-http://localhost:8080}/o/mcp",
+      "headers": {
+        "Authorization": "Basic ${LIFERAY_BASIC}"
+      }
+    }
+  }
+}
