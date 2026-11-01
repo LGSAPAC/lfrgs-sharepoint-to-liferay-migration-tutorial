@@ -254,6 +254,16 @@ class LiferayClient:
                              files={"file": (Path(local_path).name, fh)},
                              data={"document": json.dumps(document)}, params=params)
 
+    def space_document_by_erc(self, asset_library_id: int, erc: str) -> dict | None:
+        return self.get(f"/o/headless-delivery/v1.0/asset-libraries/{asset_library_id}/documents/by-external-reference-code/{erc}")
+
+    def upload_space_document(self, asset_library_id: int, local_path: str, erc: str, title: str) -> dict:
+        """A document in the CMS Space's Documents and Media (used for list item attachments)."""
+        with open(local_path, "rb") as fh:
+            return self.call("POST", f"/o/headless-delivery/v1.0/asset-libraries/{asset_library_id}/documents",
+                             files={"file": (Path(local_path).name, fh)},
+                             data={"document": json.dumps({"externalReferenceCode": erc, "title": title})})
+
     def create_document_type(self, site_id: int, data_definition: dict) -> dict:
         """Document Type = data-engine definition with content type document-library."""
         return self.call("POST", f"/o/data-engine/v2.0/sites/{site_id}/data-definitions/by-content-type/document-library",

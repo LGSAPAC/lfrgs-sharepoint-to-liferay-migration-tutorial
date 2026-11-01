@@ -97,6 +97,11 @@ def build_plan(out: Path, mapping: dict) -> dict:
             return sorted({by_upn[m["userPrincipalName"].lower()]["emailAddress"]
                            for m in users["entraGroups"].get(key, [])
                            if m.get("userPrincipalName") and m["userPrincipalName"].lower() in by_upn})
+        if d["kind"] == "adgroup":
+            msg = (f"Active Directory group {d['groupId']}: members can't be read over SharePoint REST; the user "
+                   "group is created empty. Fill it with Liferay's LDAP import, or add members by hand")
+            if msg not in report["warnings"]:
+                report["warnings"].append(msg)
         if d["kind"] == "everyone":
             report["warnings"].append(
                 "'Everyone except external users' has access - in Liferay, make the site/space open or "
@@ -396,6 +401,9 @@ def render_plan_md(plan: dict) -> str:
             lines.append(f"| {m['sp']} | {m['kind']} | `{m['name']}` | {bt} |")
         for a in lp["attachmentFields"]:
             lines.append(f"| Attachments | Attachments | `{a}` | Attachment |")
+        if lp.get("attachmentLinksField"):
+            lines.append(f"| Attachments | Attachments | `{lp['attachmentLinksField']}` | "
+                         "Documents in the Space, linked from a text field |")
         lines.append("")
     if plan.get("libraries"):
         lines += ["## Document libraries -> Documents and Media", "",

@@ -329,6 +329,10 @@ class Loader:
                 for field, att in zip(lp["attachmentFields"], item.get("_attachments", [])):
                     body[field] = {"name": att["fileName"],
                                    "fileBase64": base64.b64encode(Path(att["localPath"]).read_bytes()).decode()}
+                if lp.get("attachmentLinksField") and item.get("_attachments"):
+                    links = self._space_attachments(lp, item)
+                    if links:
+                        body[lp["attachmentLinksField"]] = "\n".join(links)
                 cat_ids = self._category_ids(tv["guid"] for tf in lp.get("taxonomyFields", [])
                                              for tv in t.term_values(item, tf["field"]))
                 if cat_ids:
@@ -341,6 +345,24 @@ class Loader:
             log.info("%s: %d/%d entries", lp["listTitle"], len(ids), len(items))
         self.save()
         self._link_relationships()
+
+    def _space_attachments(self, lp: dict, item: dict) -> list[str]:
+        """CMS entries can't hold attachments in 2026.Q3: upload them to the Space, return "name: url" lines."""
+        al_id = self.state["space"].get("assetLibraryId")
+        done = self.state.setdefault("spaceAttachments", {})
+        lines = []
+        for n, att in enumerate(item.get("_attachments", []), start=1):
+            erc = f"sp-att-{lp['listId']}-{item['Id']}-{n}"
+            url = done.get(erc)
+            if not url:
+                doc = (self.lr.space_document_by_erc(al_id, erc) if not self.lr.dry_run else None) or self._try(
+                    f"attachment {att['fileName']}", self.lr.upload_space_document, al_id, att["localPath"], erc,
+                    f"{lp['listTitle']} #{item['Id']} - {att['fileName']}")
+                if not doc:
+                    continue
+                url = done[erc] = doc.get("contentUrl") or f"/documents/{doc['id']}"
+            lines.append(f"{att['fileName']}: {url}")
+        return lines
 
     def _link_relationships(self) -> None:
         defs, entries = self.state["definitions"], self.state["entries"]

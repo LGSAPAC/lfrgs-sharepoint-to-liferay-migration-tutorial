@@ -7,6 +7,7 @@ Nothing in this module does I/O, so everything here is unit-tested
 from __future__ import annotations
 
 import html
+import json
 import re
 from datetime import datetime
 from typing import Any
@@ -36,7 +37,8 @@ def erc_picklist(list_id: str, field: str) -> str:
 
 
 def erc_user(entra_id: str) -> str:
-    return f"entra-{entra_id}"
+    # SharePoint Server profiles carry "ad-<domain>-<user>" ids (Active Directory, not Entra ID)
+    return entra_id if entra_id.startswith("ad-") else f"entra-{entra_id}"
 
 
 def erc_group(sp_group_id: int, site_key: str) -> str:
@@ -369,7 +371,15 @@ def plan_list(list_info: dict, fields: list[dict], max_attachments: int = 0,
         else:
             seen[n] = 1
     attachments = []
-    for i in range(1, min(max_attachments, 10) + 1):
+    links_field = None
+    if target == "cms" and max_attachments:
+        # 2026.Q3 CMS structures reject every Attachment field value through the headless API.
+        # The loader uploads the files as documents in the Space and lists their links here.
+        links_field = "spAttachments"
+        attachments.append({"name": links_field, "label": {"en_US": "Attachments (SharePoint)"},
+                            "businessType": "LongText", "DBType": "Clob", "required": False, "indexed": True,
+                            "indexedAsKeyword": False, "indexedLanguageId": ""})
+    for i in range(1, min(max_attachments, 10) + 1 if not links_field else 1):
         attachments.append({
             "name": f"attachment{i}", "label": {"en_US": f"Attachment {i}"},
             "businessType": "Attachment", "DBType": "Long", "required": False,
@@ -406,7 +416,8 @@ def plan_list(list_info: dict, fields: list[dict], max_attachments: int = 0,
         "definition": definition, "fields": mapped, "skipped": skipped,
         "picklists": [m["picklist"] for m in mapped if m["picklist"]],
         "lookups": [{"field": m["sp"], **m["lookup"]} for m in mapped if m["lookup"]],
-        "attachmentFields": [a["name"] for a in attachments],
+        "attachmentFields": [a["name"] for a in attachments if a["businessType"] == "Attachment"],
+        "attachmentLinksField": links_field,
         "taxonomyFields": taxonomy_fields,
     }
 
@@ -483,6 +494,50 @@ LAYOUT_WIDTHS = {
     "oneColumn": [12], "fullWidth": [12], "twoColumns": [6, 6],
     "threeColumns": [4, 4, 4], "oneThirdLeftColumn": [4, 8], "oneThirdRightColumn": [8, 4],
 }
+
+
+def canvas_to_layout(canvas_content: str) -> dict:
+    """SharePoint's CanvasContent1 (the modern page JSON stored on the Site Pages item, the only
+    page source on SharePoint Server) -> Graph's canvasLayout, so the page transform is shared.
+
+    Controls carry position.zoneIndex (section), sectionIndex (column), controlIndex (order) and
+    sectionFactor (column width out of 12; 0 = full width). controlType 4 is text, 3 a web part;
+    controls without controlType are empty columns, controlType 0 holds page settings."""
+    try:
+        controls = json.loads(canvas_content) if canvas_content else []
+    except ValueError:
+        return {"horizontalSections": []}
+    sections: dict[float, dict[float, dict]] = {}
+    for c in controls if isinstance(controls, list) else []:
+        pos = c.get("position") or {}
+        if "zoneIndex" not in pos or c.get("controlType") == 0:
+            continue
+        col = sections.setdefault(pos["zoneIndex"], {}).setdefault(
+            pos.get("sectionIndex", 1), {"width": pos.get("sectionFactor", 12), "webparts": []})
+        if c.get("controlType") == 4:
+            col["webparts"].append((pos.get("controlIndex", 0),
+                                    {"@odata.type": "#microsoft.graph.textWebPart", "innerHtml": c.get("innerHTML", "")}))
+        elif c.get("controlType") == 3:
+            data = c.get("webPartData") or {}
+            spc = dict(data.get("serverProcessedContent") or {})
+            if isinstance(spc.get("imageSources"), dict):  # {"imageSource": url} -> [{"key", "value"}]
+                spc["imageSources"] = [{"key": k, "value": v} for k, v in spc["imageSources"].items()]
+            col["webparts"].append((pos.get("controlIndex", 0), {
+                "@odata.type": "#microsoft.graph.standardWebPart",
+                "webPartType": c.get("webPartId") or data.get("id"),
+                "data": {"title": data.get("title"), "description": data.get("description"),
+                         "properties": data.get("properties") or {}, "serverProcessedContent": spc}}))
+    out = []
+    for _, cols in sorted(sections.items()):
+        columns = [cols[k] for k in sorted(cols)]
+        widths = [col["width"] or 12 for col in columns]
+        layout = next((name for name, w in LAYOUT_WIDTHS.items() if w == widths and name != "fullWidth"), "oneColumn")
+        if [col["width"] for col in columns] == [0]:
+            layout = "fullWidth"
+        out.append({"layout": layout, "columns": [
+            {"width": w, "webparts": [wp for _, wp in sorted(col["webparts"], key=lambda x: x[0])]}
+            for w, col in zip(widths, columns)]})
+    return {"horizontalSections": out}
 
 
 def find_page_image_urls(page: dict) -> list[str]:

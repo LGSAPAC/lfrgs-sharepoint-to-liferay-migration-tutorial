@@ -92,8 +92,7 @@ POST /o/object-admin/v1.0/object-definitions
      "listTypeDefinitionExternalReferenceCode": "SP_CHOICE_AAAAAAAA0000_CATEGORY"},
     {"name": "launchDate", "businessType": "Date", "DBType": "Date"},
     {"name": "description", "businessType": "RichText", "DBType": "Clob"},
-    {"name": "attachment1", "businessType": "Attachment", "DBType": "Long",
-     "objectFieldSettings": [{"name": "fileSource", "value": "documentsAndMedia"}]}
+    {"name": "spAttachments", "businessType": "LongText", "DBType": "Clob"}
   ]
 }
 POST /o/object-admin/v1.0/object-definitions/{id}/publish
@@ -113,8 +112,17 @@ reading the (empty) collection works. New entries land in the Space's root `L_CO
 ```json
 PUT /o/c/productcatalogs/scopes/{spaceGroupId}/by-external-reference-code/sp-item-aaaaaaaa-…-1
 { "title": "Widget", "price": 9.5, "category": {"key": "hardware"}, "launchDate": "2026-01-15",
-  "description": "<p>Best <b>widget</b></p>", "attachment1": {"name": "spec.pdf", "fileBase64": "JVBERi0x…"} }
+  "description": "<p>Best <b>widget</b></p>",
+  "spAttachments": "spec.pdf: /documents/40255/0/spec.pdf/9996890f-…" }
 ```
+
+**Attachments on CMS entries.** In 2026.Q3.9 a CMS structure only allows Attachment fields with
+`fileSource: documentsAndMedia`, and the headless API rejects every value for them
+(`{"name", "fileBase64"}`, a document `id` or ERC: *"The value is invalid for object field"*,
+checklist L12). So for CMS lists the loader uploads each attachment as a document in the **Space**
+(`POST /o/headless-delivery/v1.0/asset-libraries/{assetLibraryId}/documents`, ERC
+`sp-att-<listId>-<itemId>-<n>`) and writes `name: link` lines into a `spAttachments` text field.
+Site Objects keep real Attachment fields (`attachment1…n`), which accept `{"name", "fileBase64"}`.
 
 ### Finishing Scenario A in Liferay
 

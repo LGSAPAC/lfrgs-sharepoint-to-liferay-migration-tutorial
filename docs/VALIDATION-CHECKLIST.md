@@ -50,7 +50,7 @@ the chapter were changed to match what the live instance accepts.
 | L9 | Object definition with `scope: depot` + `objectFolderExternalReferenceCode: L_CMS_CONTENT_STRUCTURES` shows up as a CMS content structure | `transform.py: plan_list` | ⚠️ Also needs `objectDefinitionSettings` `acceptAllGroups: true`, or entry writes `404`. Fixed |
 | L10 | Including our own `title` field doesn't clash with a Title field the CMS adds automatically | `transform.py: plan_list` | ✅ |
 | L11 | Entry upsert `PUT /o/c/{plural}/scopes/{spaceId}/by-external-reference-code/{erc}` works for depot scope | `load.py: phase_entries` | ⚠️ Works for site Objects; CMS structures need `acceptAllGroups` (L9). Fixed |
-| L12 | Attachment field accepts `{"name", "fileBase64"}` | `load.py: phase_entries` | ☐ |
+| L12 | Attachment field accepts `{"name", "fileBase64"}` | `load.py: phase_entries` | ⚠️ Works on site Objects. CMS structures reject every value (`fileSource` must be `documentsAndMedia`), so CMS attachments go to the Space as documents, linked from `spAttachments`. Fixed |
 | L13 | One-to-many relationship field name is `r_{relationship}_c_{object}Id` (the loader reads it from the definition, with that as fallback) | `load.py: _relationship_fields` | ✅ `r_product_c_productCatalogId` linked |
 | L14 | `PUT /o/c/{plural}/{id}/permissions` accepts `[{"roleName", "actionIds"}]` and an empty `actionIds` removes inherited VIEW | `load.py: phase_permissions` | ✅ |
 | L15 | `PUT /o/c/{plural}/permissions` grants `ADD_OBJECT_ENTRY` for depot-scoped structures | `load.py: phase_permissions` (falls back to a manual step) | ❌ No collection-level permissions endpoint (`400`); recorded as a manual step |
@@ -72,6 +72,20 @@ the chapter were changed to match what the live instance accepts.
 | L31 | Graph `termStore/sets/{id}` + `/children` works with delegated `TermStore.Read.All` for site-collection and global term sets | `sharepoint.py: term_set` | ☐ |
 | L32 | SP REST taxonomy column values come back as `{Label, TermGuid, WssId}` (single) / arrays (multi) with `odata=nometadata` | `transform.py: term_values` | ☐ |
 | L33 | Streaming download of files over 100 MB via `GetFileByServerRelativeUrl(…)/$value` | `sharepoint.py: download_to` | ☐ |
+
+## SharePoint Server Subscription Edition (source)
+
+Developed against the [mock](14-mock-sharepoint.md) only. Confirm on a real farm.
+
+| # | Check | Code | Status |
+|---|---|---|---|
+| S-SE1 | NTLM sign-in to `/_api` as a site collection admin; role assignments readable | `sharepoint.py: SharePointClient.__init__` | ☐ (mock ✅) |
+| S-SE2 | Site Pages items return `CanvasContent1` and `PromotedState` with `odata=nometadata` | `sharepoint.py: _server_page_items` | ☐ (mock ✅) |
+| S-SE3 | `CanvasContent1` positions/`sectionFactor` and `webPartData.serverProcessedContent.imageSources` as assumed | `transform.py: canvas_to_layout` | ☐ (mock ✅) |
+| S-SE4 | `/web/siteusers(@v)?@v='i:0#.w\|domain\\user'` and `PeopleManager/GetPropertiesFor` answer | `sharepoint.py: _server_user` | ☐ (mock ✅) |
+| S-SE5 | `/_api/v2.1/termStore/sets/{id}` (+ `/children`, `/terms/{id}/children`) exists on SE | `sharepoint.py: term_set` | ☐ (mock ✅) |
+| S-SE6 | AD groups appear as `c:0+.w\|<SID>`; "All Authenticated Users" as `c:0!.s\|windows` | `sharepoint.py: parse_login` | ☐ (mock ✅) |
+| S-SE7 | `GetFileByServerRelativeUrl(…)/$value` streams large files over NTLM | `sharepoint.py: download_to` | ☐ (mock ✅) |
 
 ## Pages
 
@@ -109,3 +123,6 @@ Then run chapters 3–9 and record the results here:
 | load | ✅ | 0 errors; re-run is idempotent |
 | verify | ✅ | 9/9 checks match |
 | prompts/03-validate.md | ☐ | |
+
+The same scenario also runs end to end from the [mock SharePoint](14-mock-sharepoint.md), Online and
+Server modes, into Liferay 2026.q3.9: 0 errors, `verify` 9/9, re-run a no-op.

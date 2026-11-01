@@ -2,7 +2,8 @@
 
 A hands-on tutorial (with working tooling) for migrating a **live SharePoint Online site** to
 **Liferay DXP 2026.Q3** and its **new CMS** (Spaces, content structures and assets built on
-Liferay Objects):
+Liferay Objects). **SharePoint Server Subscription Edition** (on-premises) works too: see
+[Chapter 13](docs/13-sharepoint-server.md).
 
 | SharePoint Online | Liferay DXP 2026.Q3 |
 |---|---|
@@ -15,7 +16,7 @@ Liferay Objects):
 | Managed metadata (term sets, terms) | **Vocabularies and categories**, hierarchy kept, tagged on entries and documents |
 | Custom lists (content: catalogs, FAQs, policies) | CMS **content structures** in a Space (depot-scoped object definitions) |
 | Custom lists (apps: requests, orders, approvals) | Liferay **Objects** in the site, with **object views** from list views |
-| List items + attachments | Structure **entries** (object entries) with Attachment fields |
+| List items + attachments | Structure **entries** (object entries); attachments as Attachment fields (Objects) or Space documents (CMS) |
 | Choice / lookup columns | **Picklists** / object **relationships** |
 | Entra ID users | Liferay **user accounts** keyed by Entra object ID (sign in with SSO) |
 | SharePoint groups / Entra groups | **User groups** with site and space membership |
@@ -66,6 +67,8 @@ plans and verifies. The CLI copies the records.
 | 9 | [Pages and news](docs/09-pages-and-news.md) | Modern pages → content pages, news → blogs, images, navigation |
 | 10 | [Permissions](docs/10-permissions.md) | Permission levels → roles; unique permissions → entry, folder and document permissions |
 | 11 | [Validation and cutover](docs/11-validation-and-cutover.md) | Reconcile, agent-assisted spot checks, delta re-runs, cutover |
+| 13 | [SharePoint Server](docs/13-sharepoint-server.md) | On-premises Subscription Edition: NTLM, REST only, what differs |
+| 14 | [Mock SharePoint in Docker](docs/14-mock-sharepoint.md) | Try or test the whole pipeline without a tenant or a farm |
 | — | [Validation checklist](docs/VALIDATION-CHECKLIST.md) | API assumptions to confirm against a real 2026.Q3 instance |
 | — | [Troubleshooting](docs/12-troubleshooting.md) | Common errors and fixes |
 
@@ -87,6 +90,13 @@ sp2lr load                    # site → users → groups → taxonomy → struc
 sp2lr verify                  # writes out/verify.md
 ```
 
+No SharePoint to hand? Start the mock (Online on port 8091, Server on 8092) and point `sp2lr` at it,
+as described in [Chapter 14](docs/14-mock-sharepoint.md):
+
+```bash
+docker compose -f docker/docker-compose.sharepoint-mock.yml up -d --build
+```
+
 Then open Claude Code in this folder (`.mcp.json` is already configured) and run the prompts in
 [`prompts/`](prompts/) to inventory, review and validate with both MCP servers.
 
@@ -96,7 +106,7 @@ Then open Claude Code in this folder (`.mcp.json` is already configured) and run
 docs/                  tutorial chapters
 prompts/               agent prompts for discovery, plan review and validation
 src/sp2lr/
-  sharepoint.py        read-only Graph + SharePoint REST client
+  sharepoint.py        read-only Graph + SharePoint REST client (Online and Server)
   mcp_server.py        SharePoint MCP server (stdio)
   extract.py           phase 1: SharePoint → out/extract
   transform.py         pure SharePoint → Liferay mappings (unit-tested)
@@ -106,8 +116,9 @@ src/sp2lr/
   liferay.py           Liferay headless client (dry-run aware)
   load.py              phase 3: idempotent loader
   verify.py            phase 4: reconciliation report
-tests/                 offline tests with a synthetic extract
-docker/                Liferay DXP 2026.Q3 docker compose + portal-ext.properties
+mock/sharepoint_mock/  mock SharePoint Online / Server for tests and demos (Chapter 14)
+tests/                 offline tests: synthetic extract, and both platforms against the mock
+docker/                Liferay DXP 2026.Q3 compose + portal-ext.properties; mock SharePoint compose
 .mcp.json              Claude Code config for both MCP servers
 mapping.example.yaml   per-site overrides
 ```
@@ -115,7 +126,7 @@ mapping.example.yaml   per-site overrides
 ## Scope
 
 Included: modern site pages, news posts, custom lists (and their attachments), document libraries
-(folders, files, metadata), managed metadata, users, SharePoint and Entra groups, site-level permissions,
+(folders, files, metadata), managed metadata, users, SharePoint, Entra and AD groups, site-level permissions,
 unique permissions on lists, items, libraries, folders and files, and Created/Modified/Author values.
 
 Flagged in `plan.md` as manual follow-ups: web parts other than text and image, list view filters,
