@@ -179,11 +179,15 @@ def audit_mappings() -> list[dict]:
     Liferay sets dateCreated/dateModified/creator itself, so the original values
     are preserved next to them (and optionally via impersonation, see load.py).
     """
-    return [{"sp": sp, "kind": kind, "name": name, "picklist": None, "lookup": None, "taxonomy": None,
-             "objectField": {"name": name, "label": {"en_US": label}, "businessType": bt, "DBType": db,
-                             "required": False, "indexed": True, "indexedAsKeyword": False,
-                             "indexedLanguageId": ""}}
-            for sp, name, kind, label, bt, db in AUDIT_FIELDS]
+    out = []
+    for sp, name, kind, label, bt, db in AUDIT_FIELDS:
+        of = {"name": name, "label": {"en_US": label}, "businessType": bt, "DBType": db,
+              "required": False, "indexed": True, "indexedAsKeyword": False, "indexedLanguageId": ""}
+        if bt == "DateTime":  # 2026.Q3 rejects DateTime fields without timeStorage
+            of["objectFieldSettings"] = [{"name": "timeStorage", "value": "convertToUTC"}]
+        out.append({"sp": sp, "kind": kind, "name": name, "picklist": None, "lookup": None, "taxonomy": None,
+                    "objectField": of})
+    return out
 
 
 def iso_utc(value: str | None) -> str | None:
@@ -250,7 +254,7 @@ def classify_list(list_info: dict, fields: list[dict], has_unique_items: bool = 
 
 
 # SharePoint view column (internal name) -> Liferay system field usable in object views
-SYSTEM_VIEW_FIELDS = {"ID": "id", "Created": "dateCreated", "Modified": "dateModified",
+SYSTEM_VIEW_FIELDS = {"ID": "id", "Created": "createDate", "Modified": "modifiedDate",
                       "Author": "creator", "LinkTitle": "title", "LinkTitleNoMenu": "title", "Title": "title"}
 _FIELD_REF = re.compile(r"<FieldRef\b([^>]*)/?>", re.I)
 _ATTR = re.compile(r'(\w+)="([^"]*)"')
@@ -282,6 +286,8 @@ def views_to_object_views(views: list[dict], plan_fields: list[dict], locale: st
             if sp_name in names:
                 sorts.append({"objectFieldName": names[sp_name], "priority": len(sorts),
                               "sortOrder": "desc" if (asc or "").upper() == "FALSE" else "asc"})
+        # A sort column must also be a view column, or Liferay rejects the view
+        cols += [x["objectFieldName"] for x in sorts if x["objectFieldName"] not in cols]
         if re.search(r"<Where>", query, re.I):
             manual.append(f"View '{v['Title']}' has a filter; recreate it as an object view filter: {query[:200]}")
         out.append({
@@ -388,6 +394,10 @@ def plan_list(list_info: dict, fields: list[dict], max_attachments: int = 0,
     }
     if target == "cms":
         definition["objectFolderExternalReferenceCode"] = "L_CMS_CONTENT_STRUCTURES"
+        # Like the built-in CMS structures: usable in every Space. Without acceptAllGroups,
+        # 2026.Q3 answers 404 to every entry write in a Space.
+        definition["objectDefinitionSettings"] = [{"name": "domain", "value": "space"},
+                                                  {"name": "acceptAllGroups", "value": "true"}]
     taxonomy_fields = [{"field": m["sp"], **m["taxonomy"]} for m in mapped if m.get("taxonomy")]
     if taxonomy_fields:
         definition["enableCategorization"] = True
@@ -573,8 +583,7 @@ def page_to_site_page(page: dict, locale: str, url_map: dict[str, str],
     title = page.get("title") or page.get("name")
     heading = {"type": "Section", "definition": {"layout": {"widthType": "Fixed"}},
                "pageElements": [_fragment("BASIC_COMPONENT-heading", "element-text", html.escape(title), locale)]}
-    body = {
-        "externalReferenceCode": erc_page(page["id"]),
+    body = {  # SitePage has no externalReferenceCode in 2026.Q3; friendlyUrlPath is the key
         "title": title,
         "title_i18n": {locale: title},
         "friendlyUrlPath": "/" + slugify(page.get("name") or title),
@@ -627,7 +636,8 @@ def navigation_items(nodes: list[dict], page_links: dict[str, str]) -> list[dict
         url = page_links.get(url, url)
         items.append({
             "name": n.get("Title"), "name_i18n": {"en_US": n.get("Title")},
-            "type": "url", "url": url, "useCustomName": True,
+            # A URL item keeps its label in typeSettings.name (the top-level name stays empty)
+            "type": "url", "typeSettings": {"url": url, "name": n.get("Title")}, "useCustomName": True,
             "navigationMenuItems": navigation_items(n.get("Children") or [], page_links),
         })
     return items

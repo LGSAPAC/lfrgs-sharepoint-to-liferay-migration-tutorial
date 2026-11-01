@@ -24,7 +24,9 @@ The migration uses one MCP server per side:
    (Release) or in `portal-ext.properties`.
 2. Go to **Control Panel → Instance Settings → Platform → MCP Server**, check **Enabled** and click
    **Save**. The setting applies per virtual instance and is off by default. While it is disabled,
-   `/o/mcp` returns `404`.
+   `/o/mcp` returns `404`. The Docker setup in this repo enables it for you, with
+   `osgi/configs/com.liferay.mcp.server.rest.internal.configuration.MCPServerConfiguration.config`
+   (`enabled=B"true"`).
 3. Test it:
 
    ```bash
@@ -33,6 +35,12 @@ The migration uses one MCP server per side:
         -H 'Accept: application/json, text/event-stream' \
         -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' http://localhost:8080/o/mcp | head -c 600
    ```
+
+On 2026.Q3.9, `tools/list` returns four generic tools rather than one tool per endpoint:
+`getToolSetsPage` (the headless APIs, one tool set each, such as `headless-delivery-v1.0`),
+`getToolSetToolSetNameToolSummariesPage`, `getToolSetToolSetNameTool` and
+`postToolSetToolSetNameToolInvoke`. The agent lists the tool sets, looks up the operation it needs and
+invokes it, so every headless API is reachable without flooding the model's context.
 
 The server acts **as the authenticated user** with that user's permissions. Use the migration admin
 for the migration itself and a lower-privileged account for read-only validation sessions.

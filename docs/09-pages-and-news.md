@@ -54,10 +54,18 @@ Suggested Liferay replacements for the common ones:
 
 ## 9.3 The API call
 
+> **Needs `feature.flag.LPS-178052=true` in 2026.Q3.** Without it, this endpoint answers
+> `400 UnsupportedOperationException` for every page. The tutorial's
+> [`portal-ext.properties`](../docker/liferay/files/portal-ext.properties) turns it on. The newer
+> page API (`/o/headless-admin-site/v1.0/sites/{siteErc}/site-pages`, keyed by ERC) is behind
+> another flag (`LPD-35443`) in 2026.Q3 and isn't used here.
+
+`SitePage` has no `externalReferenceCode` in this API, so the page's friendly URL is its key: the
+loader skips a page whose `GET …/site-pages/{friendlyUrlPath}` already answers `200`.
+
 ```json
 POST /o/headless-delivery/v1.0/sites/{siteId}/site-pages
 {
-  "externalReferenceCode": "sp-page-6d3e…",
   "title": "About Us", "title_i18n": {"en_US": "About Us"},
   "friendlyUrlPath": "/about-us", "friendlyUrlPath_i18n": {"en_US": "/about-us"},
   "pageDefinition": { "pageElement": { "type": "Root", "pageElements": [
@@ -90,7 +98,8 @@ Quick Launch (or Top navigation, if Quick Launch is empty) becomes a navigation 
 
 ```
 POST /o/headless-delivery/v1.0/sites/{siteId}/navigation-menus
-{"name": "SharePoint Navigation", "navigationMenuItems": [{"name": "About", "type": "url", "url": "/web/marketing/about-us", "navigationMenuItems": […]}]}
+{"name": "SharePoint Navigation", "navigationMenuItems": [{"name": "About", "type": "url", "useCustomName": true,
+  "typeSettings": {"url": "/web/marketing/about-us", "name": "About"}, "navigationMenuItems": […]}]}
 ```
 
 **Manual steps:** mark the menu as *Primary Navigation* (*Site Builder → Navigation Menus*) and move
@@ -125,8 +134,9 @@ POST /o/headless-delivery/v1.0/sites/{siteId}/blog-postings
 ```
 
 Links to news pages from other pages and navigation are rewritten to
-`/web/<site>/-/blogs/<slug>`. The blog author is the migration user unless
-`audit.impersonate: true` is set ([Chapter 4](04-mapping-and-plan.md#45-created-modified-and-author)).
+`/web/<site>/-/blogs/<slug>`. The blog author is the migration user (`doAsUserId` impersonation is
+ignored in 2026.Q3, see [Chapter 4](04-mapping-and-plan.md#45-created-modified-and-author)); the
+original publish date is kept in `datePublished`.
 
 ## 9.6 Visual check
 

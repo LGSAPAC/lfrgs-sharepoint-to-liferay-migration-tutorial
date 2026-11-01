@@ -21,7 +21,7 @@ Liferay Objects):
 | SharePoint groups / Entra groups | **User groups** with site and space membership |
 | Permission levels | **Site roles** and **space (asset library) roles** |
 | Unique item / folder / file permissions | **Entry, folder and document permissions** via per-principal roles |
-| Created, Modified, Author, Editor | `spCreated` / `spModified` / `spCreatedBy` / `spModifiedBy` fields, optionally the real creator via impersonation |
+| Created, Modified, Author, Editor | `spCreated` / `spModified` / `spCreatedBy` / `spModifiedBy` fields |
 
 The migration is driven by **two MCP servers**, so an AI agent (Claude Code, Claude Desktop, Cursor, VS Code
 Copilot) can inventory the source, help with mapping decisions and check the result:

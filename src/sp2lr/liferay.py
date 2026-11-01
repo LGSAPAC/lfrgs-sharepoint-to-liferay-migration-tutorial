@@ -65,10 +65,20 @@ class LiferayClient:
         except ValueError:
             return {"_raw": r.text}
 
+    def _names_dry_run_record(self, path: str) -> bool:
+        """True when a dry run reads a record it only pretended to create (IDs 900001+): the real
+        Liferay doesn't have it, so the read is answered locally as "not found"/"empty"."""
+        return self.dry_run and any(seg.isdigit() and 900000 < int(seg) <= self._fake_id
+                                    for seg in path.split("?", 1)[0].split("/"))
+
     def get(self, path: str, ok404: bool = True) -> Any:
+        if self._names_dry_run_record(path):
+            return None
         return self.call("GET", path, ok404=ok404)
 
     def paged(self, path: str, page_size: int = 200):
+        if self._names_dry_run_record(path):
+            return
         page = 1
         sep = "&" if "?" in path else "?"
         while True:
@@ -90,25 +100,38 @@ class LiferayClient:
 
     # ----------------------------------------------------------- sites/spaces
     def site_by_friendly_url(self, key: str) -> dict | None:
-        return self.get(f"/o/headless-admin-user/v1.0/sites/by-friendly-url-path/{key}")
+        try:
+            return self.get(f"/o/headless-admin-user/v1.0/sites/by-friendly-url-path/{key}")
+        except LiferayError as e:
+            # 2026.Q3 answers 400 "No site exists with friendly URL ..." rather than 404
+            if e.status == 400 and "No site exists" in e.body:
+                return None
+            raise
 
     def create_site(self, name: str, key: str, erc: str) -> dict:
-        # headless-site creates a blank site; membershipType "private" means
-        # only explicitly assigned members (matching a SharePoint team site).
+        # Without a template, headless-site creates a blank site (2026.Q3 has no
+        # "com.liferay.site.initializer.blank" initializer). membershipType "private"
+        # means only explicitly assigned members, matching a SharePoint team site.
         return self.call("POST", "/o/headless-site/v1.0/sites", {
             "externalReferenceCode": erc, "name": name, "friendlyUrlPath": f"/{key}",
-            "membershipType": "private", "templateType": "site-initializer",
-            "templateKey": "com.liferay.site.initializer.blank",
+            "membershipType": "private",
         })
 
+    # Asset libraries are addressed by ERC directly: /asset-libraries/{erc}. In the
+    # response, `id` is the asset library (depot entry) and `siteId` is its group ID,
+    # which is what memberships and /scopes/{id} need.
     def space_by_erc(self, erc: str) -> dict | None:
-        return self.get(f"/o/headless-asset-library/v1.0/asset-libraries/by-external-reference-code/{erc}")
+        return self.get(f"/o/headless-asset-library/v1.0/asset-libraries/{erc}")
 
     def upsert_space(self, erc: str, key: str, name: str, description: str) -> dict:
-        return self.upsert_by_erc("/o/headless-asset-library/v1.0/asset-libraries", erc, {
+        return self.call("PUT", f"/o/headless-asset-library/v1.0/asset-libraries/{erc}", {
             "assetLibraryKey": key, "name": name, "description": description,
             "settings": {}, "type": "Space",
         })
+
+    def connect_space_to_site(self, space_erc: str, site_erc: str) -> Any:
+        return self.call("PUT", f"/o/headless-asset-library/v1.0/asset-libraries/{space_erc}"
+                                f"/connected-sites/{site_erc}", {})
 
     # ----------------------------------------------------------------- users
     def upsert_user(self, erc: str, body: dict) -> dict:
@@ -151,6 +174,10 @@ class LiferayClient:
             for field in body["objectFields"]:
                 if field["name"] not in have:
                     self.call("POST", f"/o/object-admin/v1.0/object-definitions/{existing['id']}/object-fields", field)
+            settings = body.get("objectDefinitionSettings")
+            if settings and existing.get("objectDefinitionSettings") != settings:
+                self.call("PATCH", f"/o/object-admin/v1.0/object-definitions/{existing['id']}",
+                          {"objectDefinitionSettings": settings})
             return self.get(f"/o/object-admin/v1.0/object-definitions/{existing['id']}") or existing
         return self.call("POST", "/o/object-admin/v1.0/object-definitions", body)
 
@@ -231,6 +258,19 @@ class LiferayClient:
         """Document Type = data-engine definition with content type document-library."""
         return self.call("POST", f"/o/data-engine/v2.0/sites/{site_id}/data-definitions/by-content-type/document-library",
                          data_definition)
+
+    def create_file_entry_type(self, site_id: int, data_definition_id: int, key: str, name: str, erc: str) -> dict:
+        """The Documents and Media type itself. The data-engine definition only holds its fields;
+        without a file entry type, uploads silently fall back to Basic Document."""
+        return self.jsonws("/dlfileentrytype/add-file-entry-type", {
+            "externalReferenceCode": erc, "groupId": site_id, "dataDefinitionId": data_definition_id,
+            "fileEntryTypeKey": key, "nameMap": {self.settings.locale: name}, "descriptionMap": {},
+            "serviceContext": {}})
+
+    def file_entry_type_by_erc(self, site_id: int, erc: str) -> dict | None:
+        res = self.call("POST", "/api/jsonws/invoke", {"/dlfileentrytype/get-file-entry-type-by-external-reference-code":
+                                                       {"externalReferenceCode": erc, "groupId": site_id}}, write=False, ok404=True)
+        return res if isinstance(res, dict) and res.get("fileEntryTypeId") else None
 
     def document_type_by_key(self, site_id: int, key: str) -> dict | None:
         return self.get(f"/o/data-engine/v2.0/sites/{site_id}/data-definitions/by-content-type/document-library"

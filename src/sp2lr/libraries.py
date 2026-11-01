@@ -16,13 +16,17 @@ import posixpath
 
 from . import transform as t
 
-# Liferay data-engine field types for document type fields, by object businessType
+# Liferay data-engine field types for document type fields, by object businessType.
+# Every field needs a dataType, or 2026.Q3 treats it as transient and rejects its value.
+# Choice columns become text fields: in 2026.Q3 a select field on a document type doesn't
+# take a value through the headless document upload, so the option label is stored as text.
 DDM_TYPES = {
-    "Text": ("text", {}), "LongText": ("text", {"displayStyle": "multiline"}),
-    "RichText": ("rich_text", {}), "LongInteger": ("numeric", {"dataType": "integer"}),
+    "Text": ("text", {"dataType": "string"}), "LongText": ("text", {"dataType": "string", "displayStyle": "multiline"}),
+    "RichText": ("rich_text", {"dataType": "html"}), "LongInteger": ("numeric", {"dataType": "integer"}),
     "Decimal": ("numeric", {"dataType": "double"}), "PrecisionDecimal": ("numeric", {"dataType": "double"}),
-    "Date": ("date", {}), "DateTime": ("date_time", {}), "Boolean": ("checkbox", {}),
-    "Picklist": ("select", {}), "MultiselectPicklist": ("select", {"multiple": True}),
+    "Date": ("date", {"dataType": "date"}), "DateTime": ("date_time", {"dataType": "date"}),
+    "Boolean": ("checkbox", {"dataType": "boolean"}),
+    "Picklist": ("text", {"dataType": "string"}), "MultiselectPicklist": ("text", {"dataType": "string"}),
 }
 
 # Documents and Media actions per SharePoint level (folders get the ADD_* actions too)
@@ -67,9 +71,9 @@ def document_type(lib: dict, fields: list[dict], audit: bool = True) -> dict:
         of = m["objectField"]
         ftype, props = DDM_TYPES.get(of["businessType"], ("text", {}))
         field = {"name": m["name"], "label": of["label"], "fieldType": ftype,
-                 "customProperties": dict(props), "indexType": "keyword", "localizable": False,
+                 "customProperties": {**props, "fieldReference": m["name"]}, "indexType": "keyword", "localizable": False,
                  "repeatable": False, "required": False}
-        if m.get("picklist"):
+        if m.get("picklist") and ftype == "select":
             field["customProperties"]["options"] = {"en_US": [
                 {"label": e["name"], "value": e["key"]} for e in m["picklist"]["listTypeEntries"]]}
         ddm_fields.append(field)
@@ -88,10 +92,16 @@ def metadata_values(doc_type: dict, item: dict) -> dict[str, str]:
         v = t.convert_value(m, item.get(m["sp"]))
         if v is None:
             continue
-        if isinstance(v, dict) and "key" in v:
-            v = v["key"]
+        raw = item.get(m["sp"])
+        if m["kind"] == "Choice":
+            v = raw  # the choice as SharePoint shows it, stored in a text field
+        elif m["kind"] == "MultiChoice":
+            vals = raw.get("results", []) if isinstance(raw, dict) else raw
+            v = ", ".join(str(x) for x in vals)
         elif isinstance(v, list):
-            v = ",".join(x["key"] if isinstance(x, dict) else str(x) for x in v)
+            v = ", ".join(x["key"] if isinstance(x, dict) else str(x) for x in v)
+        elif m["objectField"]["businessType"] == "Date" and len(str(v)) == 10:
+            v = f"{v}T00:00:00Z"  # date fields only take a full ISO-8601 timestamp
         out[m["name"]] = str(v).lower() if isinstance(v, bool) else str(v)
     return out
 

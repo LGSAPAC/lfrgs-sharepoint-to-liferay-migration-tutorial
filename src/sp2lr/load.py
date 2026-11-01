@@ -94,14 +94,19 @@ class Loader:
             site = self._try("create site", self.lr.create_site, s["name"], s["key"], s["erc"],
                              manual=f"Create site '{s['name']}' with friendly URL /{s['key']}, then re-run phase site")
         if site:
-            self.state["site"] = {"id": site["id"], "key": s["key"]}
+            site_erc = site.get("externalReferenceCode") or s["erc"]
+            self.state["site"] = {"id": site["id"], "key": s["key"], "erc": site_erc}
             log.info("Site %s -> %s", s["name"], site["id"])
         space = self._try("upsert space", self.lr.upsert_space, sp["erc"], sp["key"], sp["name"], sp["description"])
         if space:
-            self.state["space"] = {"id": space["id"], "erc": sp["erc"], "key": sp["key"]}
-            log.info("Space %s -> %s", sp["name"], space["id"])
-        # Connecting a space to a site is done in the CMS UI (Space > Settings > Sites)
-        self.manual.append(f"Connect Space '{sp['name']}' to site '{s['name']}' (CMS > Spaces > {sp['name']} > Settings > Connected Sites)")
+            # "id" is the space's group ID (siteId in the response): memberships and /scopes/{id} use it
+            self.state["space"] = {"id": space.get("siteId", space["id"]), "assetLibraryId": space["id"],
+                                   "erc": sp["erc"], "key": sp["key"]}
+            log.info("Space %s -> group %s", sp["name"], self.state["space"]["id"])
+        if site and space:
+            self._try("connect space to site", self.lr.connect_space_to_site, sp["erc"], self.state["site"]["erc"],
+                      manual=f"Connect Space '{sp['name']}' to site '{s['name']}' "
+                             f"(CMS > Spaces > {sp['name']} > Settings > Connected Sites)")
 
     # ----------------------------------------------------------------- users
     def phase_users(self) -> None:
@@ -259,12 +264,20 @@ class Loader:
                     f"{body['name']} > Layouts) and grant the site roles access in Site Settings > Roles")
 
         # Relationships for lookup columns (after every definition exists)
+        targets = {lp["listId"]: lp["target"] for lp in self.plan["lists"]}
         for lp in self.plan["lists"]:
             src = defs.get(lp["listId"])
             for lk in lp["lookups"]:
                 tgt_key = self._list_key(defs, lk["targetListId"])
                 tgt = defs.get(tgt_key) if tgt_key else None
                 if not src or not tgt:
+                    continue
+                if (lp["target"] == "cms") != (targets.get(tgt_key) == "cms"):
+                    # 2026.Q3: a depot-scoped CMS structure can only relate to other depot-scoped structures
+                    self.manual.append(
+                        f"Lookup '{lk['field']}' on '{lp['listTitle']}' points to a list migrated to the other "
+                        "scenario (CMS structure vs. site Object), which Liferay can't relate. Move both lists to the "
+                        "same target in mapping.yaml (lists.overrides) and re-run, or keep the value as text.")
                     continue
                 if lk["multi"]:
                     owner, o1, o2, rtype = src, src, tgt, "manyToMany"
@@ -445,13 +458,17 @@ class Loader:
             strategy = lib.get("metadataStrategy", "documentType")
             if strategy == "documentType" and dt["fields"] and dt["erc"] not in doc_types:
                 key = dt["dataDefinition"]["dataDefinitionKey"]
-                existing = self.lr.document_type_by_key(site_id, key) if not self.lr.dry_run else None
-                created = existing or self._try(
-                    f"document type {dt['name']}", self.lr.create_document_type, site_id, dt["dataDefinition"],
-                    manual=f"Create document type '{dt['name']}' (Documents and Media > Document Types); "
-                           f"metadata was kept in each document's description")
-                if created:
-                    doc_types[dt["erc"]] = created["id"]
+                manual = (f"Create document type '{dt['name']}' (Documents and Media > Document Types); "
+                          f"metadata was kept in each document's description")
+                fet = self.lr.file_entry_type_by_erc(site_id, dt["erc"]) if not self.lr.dry_run else None
+                if not fet:
+                    existing = self.lr.document_type_by_key(site_id, key) if not self.lr.dry_run else None
+                    ddef = existing or self._try(f"document type fields {dt['name']}", self.lr.create_document_type,
+                                                 site_id, dt["dataDefinition"], manual=manual)
+                    fet = ddef and self._try(f"document type {dt['name']}", self.lr.create_file_entry_type, site_id,
+                                             ddef["id"], key, dt["name"], dt["erc"], manual=manual)
+                if fet:
+                    doc_types[dt["erc"]] = int(fet.get("fileEntryTypeId") or fet["id"])
             use_type = strategy == "documentType" and dt["erc"] in doc_types
 
             for f in lib["folders"]:

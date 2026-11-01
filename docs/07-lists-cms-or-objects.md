@@ -82,6 +82,8 @@ POST /o/object-admin/v1.0/object-definitions
   "name": "ProductCatalog", "label": {"en_US": "Product Catalog"}, "pluralLabel": {"en_US": "Product Catalog"},
   "scope": "depot",
   "objectFolderExternalReferenceCode": "L_CMS_CONTENT_STRUCTURES",
+  "objectDefinitionSettings": [ {"name": "domain", "value": "space"},
+                                {"name": "acceptAllGroups", "value": "true"} ],
   "titleObjectFieldName": "title",
   "objectFields": [
     {"name": "title", "businessType": "Text", "DBType": "String", "required": true},
@@ -102,10 +104,14 @@ and sits in a CMS object folder (`L_CMS_CONTENT_STRUCTURES`, `L_CMS_FILE_TYPES` 
 `L_CMS_STRUCTURE_REPEATABLE_GROUPS`). Once published, it appears under *CMS → Admin → Content
 Structures*.
 
+It also needs **`acceptAllGroups: true`** in `objectDefinitionSettings`, as Liferay's built-in CMS
+structures have. Without it, every entry write in a Space answers a bare `404 NOT_FOUND`, even though
+reading the (empty) collection works. New entries land in the Space's root `L_CONTENTS` folder.
+
 ### Entries go into the Space
 
 ```json
-PUT /o/c/productcatalogs/scopes/{spaceId}/by-external-reference-code/sp-item-aaaaaaaa-…-1
+PUT /o/c/productcatalogs/scopes/{spaceGroupId}/by-external-reference-code/sp-item-aaaaaaaa-…-1
 { "title": "Widget", "price": 9.5, "category": {"key": "hardware"}, "launchDate": "2026-01-15",
   "description": "<p>Best <b>widget</b></p>", "attachment1": {"name": "spec.pdf", "fileBase64": "JVBERi0x…"} }
 ```
@@ -174,13 +180,15 @@ POST /o/object-admin/v1.0/object-definitions/{id}/object-views
 { "name": {"en_US": "All Items"}, "defaultObjectView": true,
   "objectViewColumns": [ {"objectFieldName": "title", "priority": 0},
                          {"objectFieldName": "quantity", "priority": 1},
-                         {"objectFieldName": "orderStatus", "priority": 2} ],
-  "objectViewSortColumns": [ {"objectFieldName": "dateCreated", "priority": 0, "sortOrder": "desc"} ],
+                         {"objectFieldName": "orderStatus", "priority": 2},
+                         {"objectFieldName": "createDate", "priority": 3} ],
+  "objectViewSortColumns": [ {"objectFieldName": "createDate", "priority": 0, "sortOrder": "desc"} ],
   "objectViewFilterColumns": [] }
 ```
 
-`Created`, `Modified`, `Author` and `ID` map to the system fields `dateCreated`, `dateModified`,
-`creator` and `id`. CAML `<Where>` filters are listed in `plan.md` as manual follow-ups, because they
+`Created`, `Modified`, `Author` and `ID` map to the system fields `createDate`, `modifiedDate`,
+`creator` and `id`. A sort column must also be one of the view's columns, so the loader adds it if
+the SharePoint view sorts on a column it doesn't show. CAML `<Where>` filters are listed in `plan.md` as manual follow-ups, because they
 rarely translate one-to-one. Rebuild them in *Objects → Orders → Views → Filters*.
 
 ### Entries go into the site
@@ -232,8 +240,11 @@ PATCH /o/c/orders/{orderId}              {"r_product_c_productCatalogId": <produ
 PUT   /o/c/orders/{orderId}/tags/{tagEntryId}
 ```
 
-> Cross-scope relationships (site Object → depot structure) are listed in the validation checklist
-> (L17). If your build rejects them, set both lists to the same target.
+> **Both lists must use the same scenario.** Liferay 2026.Q3 rejects a relationship between a CMS
+> structure (depot scope) and a site Object: *"An object definition scoped by depot can only be
+> related to object definitions of the same scope"* (checklist L17). The loader skips such lookups and
+> lists them as manual follow-ups. To keep the link, put both lists on the same target in
+> `mapping.yaml` (`lists.overrides`), for example both as Objects.
 
 ## 7.5 What neither scenario migrates
 

@@ -63,10 +63,14 @@ docker compose -f docker/docker-compose.yml logs -f liferay  # wait for "Server 
 ```
 
 [`docker/liferay/files/portal-ext.properties`](../docker/liferay/files/portal-ext.properties) sets the
-tutorial admin to `test@liferay.com` / `learn` and turns on the MCP feature flags.
+tutorial admin to `test@liferay.com` / `learn`, turns on the MCP feature flags and the page-creation
+flag the `pages` phase needs (`LPS-178052`). A config file under `docker/liferay/files/osgi/configs`
+enables the MCP server at startup.
 
 > Pin `LIFERAY_TAG` to the exact build you validate against, for example
-> `LIFERAY_TAG=2026.q3.0 docker compose ...`. Check the tag list on Docker Hub (`liferay/dxp`).
+> `LIFERAY_TAG=2026.q3.9 docker compose ...`. Check the tag list on Docker Hub (`liferay/dxp`). The
+> tooling was tested end to end against **2026.q3.9**: that image started without an activation key
+> and registered a *DXP Development* license by itself, which is enough for a local sandbox.
 
 ### Migration account in Liferay
 

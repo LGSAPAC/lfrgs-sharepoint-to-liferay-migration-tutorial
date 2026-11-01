@@ -82,7 +82,8 @@ def test_lookup_target_list_id_in_another_case(tmp_path):
     """A lookup column may reference its target list's GUID in a different case than the list's Id."""
     upper = json.loads(json.dumps(EXTRACT).replace(PRODUCTS, PRODUCTS.upper()))
     out = _write_extract(tmp_path, upper)
-    loader, calls = _dry_loader(out)
+    # Both lists as Objects, so Liferay can relate them
+    loader, calls = _dry_loader(out, {"lists": {"overrides": {"Product Catalog": {"target": "objects"}}}})
 
     rel = loader.state["definitions"][ORDERS]["relationships"]["Product"]
     assert rel["target"] == PRODUCTS.upper()  # the key the target's entries are stored under
@@ -171,3 +172,27 @@ def test_extract_then_plan(tmp_path):
     (lib,) = plan["libraries"]
     assert len(lib["documents"]) == 3 and all(Path(d["localPath"]).is_absolute() for d in lib["documents"])
     assert len(plan["pages"]) == 2 and len(plan["news"]["posts"]) == 1
+
+
+def test_dry_run_never_reads_records_it_only_pretended_to_create(tmp_path):
+    """On a fresh Liferay the dry-run site doesn't exist, so reads under its fake ID must not reach Liferay."""
+    seen = []
+
+    def fresh(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return _fresh_liferay(request)
+
+    out = _write_extract(tmp_path, EXTRACT)
+    image = out / "extract" / "files" / "team.jpg"
+    image.write_bytes(b"jpg")
+    pages = json.loads((out / "extract" / "pages.json").read_text())
+    pages[1]["_images"] = {"/sites/marketing/SiteAssets/team.jpg": str(image)}
+    (out / "extract" / "pages.json").write_text(json.dumps(pages))
+    build_plan(out, {})
+    lr = LiferayClient(LiferaySettings("http://liferay.invalid", "u", "p"), dry_run=True, out=out)
+    lr.http = httpx.Client(base_url="http://liferay.invalid", transport=httpx.MockTransport(fresh))
+    loader = Loader(lr, out)
+    loader.run(PHASES)
+
+    assert loader.state["errors"] == []
+    assert not any("/9000" in p for p in seen)
