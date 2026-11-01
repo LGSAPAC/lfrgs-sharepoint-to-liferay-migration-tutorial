@@ -10,13 +10,18 @@ Use the API Explorer (`http://localhost:8080/o/api`) and the Liferay MCP server'
 
 **Status:** ✅ confirmed · ⚠️ works with a change · ❌ broken · ☐ not yet tested
 
+**Last run:** Liferay DXP **2026.q3.9** in Docker with PostgreSQL 16, on 2026-11-01. The run loaded
+the synthetic SharePoint extract from `tests/conftest.py` (the scenario below), so every Liferay (L, P)
+item was checked live. The SharePoint (S) items still need a real tenant. "Fixed" means the code and
+the chapter were changed to match what the live instance accepts.
+
 ## Environment
 
 | # | Check | How | Status |
 |---|---|---|---|
-| E1 | Docker tag `liferay/dxp:2026.q3.0` exists and starts with PostgreSQL | `docker compose up`, look for "Server startup in" | ☐ |
-| E2 | `feature.flag.LPD-63311` makes *Instance Settings → Platform → MCP Server* appear | UI | ☐ |
-| E3 | `/o/mcp` answers `tools/list` with Basic auth | curl in [Chapter 2](02-mcp-servers.md#21-enable-the-liferay-mcp-server) | ☐ |
+| E1 | Docker tag `liferay/dxp:2026.q3.0` exists and starts with PostgreSQL | `docker compose up`, look for "Server startup in" | ⚠️ `2026.q3.0` exists; tested on **2026.q3.9**. Starts without an activation key (registers a DXP Development license) |
+| E2 | `feature.flag.LPD-63311` makes *Instance Settings → Platform → MCP Server* appear | UI | ✅ Enabled through `MCPServerConfiguration.config` (needs the flag); the UI page itself not opened |
+| E3 | `/o/mcp` answers `tools/list` with Basic auth | curl in [Chapter 2](02-mcp-servers.md#21-enable-the-liferay-mcp-server) | ✅ `401` without auth, `404` while disabled, `tools/list` returns 4 generic tools |
 | E4 | Claude Code connects to both servers from `.mcp.json` | `/mcp` | ☐ |
 
 ## SharePoint (source)
@@ -34,50 +39,67 @@ Use the API Explorer (`http://localhost:8080/o/api`) and the Liferay MCP server'
 
 | # | Check | Code | Status |
 |---|---|---|---|
-| L1 | `POST /o/headless-site/v1.0/sites` with `templateKey: com.liferay.site.initializer.blank` creates a site | `liferay.py: create_site` (falls back to a manual step) | ☐ |
-| L2 | `PUT /o/headless-asset-library/v1.0/asset-libraries/by-external-reference-code/{erc}` with `"type": "Space"` creates a CMS Space | `liferay.py: upsert_space` | ☐ |
-| L3 | The asset library `id` is the depot **groupId** (used for JSON-WS membership and `/scopes/{id}`) | `load.py: phase_groups, _scope_path` | ☐ |
-| L4 | Headless or JSON-WS operation to **connect a Space to a site** (the `connect-sites` action) | currently a manual step | ☐ |
-| L5 | `PUT /o/headless-admin-user/v1.0/user-accounts/by-external-reference-code/{erc}` creates users without a password | `liferay.py: upsert_user` | ☐ |
-| L6 | `POST /o/headless-admin-user/v1.0/roles` with `roleType: "depot"` creates a space role (or which `roleType` value?) | `liferay.py: ensure_role` | ☐ |
-| L7 | Default space role names: *Asset Library Owner / Administrator / Member / Connected Site Member* | `transform.py: DEFAULT_LEVEL_MAP` | ☐ |
-| L8 | JSON-WS `/usergroup/add-group-user-groups`, `/usergroupgrouprole/add-user-group-group-roles`, `/user/add-group-users` (with `serviceContext: {}`), `/usergrouprole/add-user-group-roles` work through `/api/jsonws/invoke` | `load.py: _grant` | ☐ |
-| L9 | Object definition with `scope: depot` + `objectFolderExternalReferenceCode: L_CMS_CONTENT_STRUCTURES` shows up as a CMS content structure | `transform.py: plan_list` | ☐ |
-| L10 | Including our own `title` field doesn't clash with a Title field the CMS adds automatically | `transform.py: plan_list` | ☐ |
-| L11 | Entry upsert `PUT /o/c/{plural}/scopes/{spaceId}/by-external-reference-code/{erc}` works for depot scope | `load.py: phase_entries` | ☐ |
-| L12 | Attachment field accepts `{"name", "fileBase64"}` | `load.py: phase_entries` | ☐ |
-| L13 | One-to-many relationship field name is `r_{relationship}_c_{object}Id` (the loader reads it from the definition, with that as fallback) | `load.py: _relationship_fields` | ☐ |
-| L14 | `PUT /o/c/{plural}/{id}/permissions` accepts `[{"roleName", "actionIds"}]` and an empty `actionIds` removes inherited VIEW | `load.py: phase_permissions` | ☐ |
-| L15 | `PUT /o/c/{plural}/permissions` grants `ADD_OBJECT_ENTRY` for depot-scoped structures | `load.py: phase_permissions` (falls back to a manual step) | ☐ |
+| L1 | `POST /o/headless-site/v1.0/sites` with `templateKey: com.liferay.site.initializer.blank` creates a site | `liferay.py: create_site` (falls back to a manual step) | ⚠️ No `com.liferay.site.initializer.blank` initializer (`400`); POST without a template creates a blank site. Fixed |
+| L2 | `PUT /o/headless-asset-library/v1.0/asset-libraries/by-external-reference-code/{erc}` with `"type": "Space"` creates a CMS Space | `liferay.py: upsert_space` | ⚠️ Path is `/asset-libraries/{erc}` (no `by-external-reference-code`). Fixed |
+| L3 | The asset library `id` is the depot **groupId** (used for JSON-WS membership and `/scopes/{id}`) | `load.py: phase_groups, _scope_path` | ❌ The group ID is the response's `siteId`; `id` is the asset library. Fixed (state stores `siteId`) |
+| L4 | Headless or JSON-WS operation to **connect a Space to a site** (the `connect-sites` action) | currently a manual step | ✅ `PUT /asset-libraries/{spaceErc}/connected-sites/{siteErc}` with body `{}`. Now automated |
+| L5 | `PUT /o/headless-admin-user/v1.0/user-accounts/by-external-reference-code/{erc}` creates users without a password | `liferay.py: upsert_user` | ✅ |
+| L6 | `POST /o/headless-admin-user/v1.0/roles` with `roleType: "depot"` creates a space role (or which `roleType` value?) | `liferay.py: ensure_role` | ✅ `roleType: depot` works; role assigned in the Space |
+| L7 | Default space role names: *Asset Library Owner / Administrator / Member / Connected Site Member* | `transform.py: DEFAULT_LEVEL_MAP` | ✅ *Asset Library Owner* assigned |
+| L8 | JSON-WS `/usergroup/add-group-user-groups`, `/usergroupgrouprole/add-user-group-group-roles`, `/user/add-group-users` (with `serviceContext: {}`), `/usergrouprole/add-user-group-roles` work through `/api/jsonws/invoke` | `load.py: _grant` | ✅ Memberships and group roles confirmed in the database |
+| L9 | Object definition with `scope: depot` + `objectFolderExternalReferenceCode: L_CMS_CONTENT_STRUCTURES` shows up as a CMS content structure | `transform.py: plan_list` | ⚠️ Also needs `objectDefinitionSettings` `acceptAllGroups: true`, or entry writes `404`. Fixed |
+| L10 | Including our own `title` field doesn't clash with a Title field the CMS adds automatically | `transform.py: plan_list` | ✅ |
+| L11 | Entry upsert `PUT /o/c/{plural}/scopes/{spaceId}/by-external-reference-code/{erc}` works for depot scope | `load.py: phase_entries` | ⚠️ Works for site Objects; CMS structures need `acceptAllGroups` (L9). Fixed |
+| L12 | Attachment field accepts `{"name", "fileBase64"}` | `load.py: phase_entries` | ⚠️ Works on site Objects. CMS structures reject every value (`fileSource` must be `documentsAndMedia`), so CMS attachments go to the Space as documents, linked from `spAttachments`. Fixed |
+| L13 | One-to-many relationship field name is `r_{relationship}_c_{object}Id` (the loader reads it from the definition, with that as fallback) | `load.py: _relationship_fields` | ✅ `r_product_c_productCatalogId` linked |
+| L14 | `PUT /o/c/{plural}/{id}/permissions` accepts `[{"roleName", "actionIds"}]` and an empty `actionIds` removes inherited VIEW | `load.py: phase_permissions` | ✅ |
+| L15 | `PUT /o/c/{plural}/permissions` grants `ADD_OBJECT_ENTRY` for depot-scoped structures | `load.py: phase_permissions` (falls back to a manual step) | ❌ No collection-level permissions endpoint (`400`); recorded as a manual step |
 | L16 | Granting VIEW on a content structure through the API (to remove the manual step) | currently a manual step | ☐ |
-| L17 | One-to-many relationship between a site-scoped Object and a depot-scoped CMS structure is accepted | `load.py: phase_structures` | ☐ |
-| L18 | `POST /o/object-admin/v1.0/object-definitions/{id}/object-views` with `objectViewColumns`/`objectViewSortColumns`; system fields `dateCreated`, `creator`, `id` allowed as columns | `load.py: _object_views` | ☐ |
-| L19 | Field settings `uniqueValues`, `defaultValueType`/`defaultValue` accepted on object fields (and whether CMS structures accept them too) | `transform.py: field_extras` | ☐ |
+| L17 | One-to-many relationship between a site-scoped Object and a depot-scoped CMS structure is accepted | `load.py: phase_structures` | ❌ Rejected: depot structures relate only to depot structures. Loader skips and reports |
+| L18 | `POST /o/object-admin/v1.0/object-definitions/{id}/object-views` with `objectViewColumns`/`objectViewSortColumns`; system fields `dateCreated`, `creator`, `id` allowed as columns | `load.py: _object_views` | ⚠️ System fields are `createDate`/`modifiedDate`; a sort column must also be a view column (`500` otherwise). Fixed |
+| L19 | Field settings `uniqueValues`, `defaultValueType`/`defaultValue` accepted on object fields (and whether CMS structures accept them too) | `transform.py: field_extras` | ✅ for Objects (`defaultValue` applied); CMS structures not checked |
 | L20 | `panelCategoryKey: site_administration.content` puts site-scoped Objects in the site menu | `transform.py: plan_list` | ☐ |
 | L21 | Which classic Object features (views, validations, actions, state manager) also work on CMS content structures in 2026.Q3 | docs/06 table | ☐ |
 | L22 | SP REST `/views?$expand=ViewFields` returns `ViewFields.Items` with `odata=nometadata` | `sharepoint.py: list_views` | ☐ |
-| L23 | `POST /o/headless-admin-taxonomy/v1.0/sites/{globalSiteId}/taxonomy-vocabularies` with `externalReferenceCode`, and `GET …/taxonomy-vocabularies/by-external-reference-code/{erc}` | `liferay.py: create_vocabulary, vocabulary` | ☐ |
-| L24 | Child categories via `POST /taxonomy-categories/{parentId}/taxonomy-categories`; lookup via `…/taxonomy-vocabularies/{id}/taxonomy-categories/by-external-reference-code/{erc}` | `liferay.py: create_category, category` | ☐ |
-| L25 | Object entries accept `taxonomyCategoryIds` (with `enableCategorization: true`), including global-site categories on depot-scoped CMS entries | `load.py: phase_entries` | ☐ |
-| L26 | `POST /o/data-engine/v2.0/sites/{id}/data-definitions/by-content-type/document-library` creates a usable **Document Type**; field types `select`, `date`, `date_time`, `checkbox`, `numeric`, `rich_text` | `liferay.py: create_document_type` (falls back to description) | ☐ |
-| L27 | Document upload accepts `documentType: {name, contentFields: [{name, contentFieldValue: {data}}]}`, `externalReferenceCode` and `taxonomyCategoryIds` in the `document` part | `load.py: phase_documents` (retries without the type) | ☐ |
-| L28 | `PUT /o/headless-delivery/v1.0/documents/{id}/permissions` and `/document-folders/{id}/permissions` | `load.py: phase_permissions` | ☐ |
-| L29 | `?doAsUserId=<userId>` on headless create calls makes that user the `creator` (migration user has Impersonate) | `load.py: _as_author` | ☐ |
-| L30 | Blog posting accepts `datePublished` in the past, `externalReferenceCode` and `friendlyUrlPath` | `load.py: phase_news` | ☐ |
+| L23 | `POST /o/headless-admin-taxonomy/v1.0/sites/{globalSiteId}/taxonomy-vocabularies` with `externalReferenceCode`, and `GET …/taxonomy-vocabularies/by-external-reference-code/{erc}` | `liferay.py: create_vocabulary, vocabulary` | ✅ |
+| L24 | Child categories via `POST /taxonomy-categories/{parentId}/taxonomy-categories`; lookup via `…/taxonomy-vocabularies/{id}/taxonomy-categories/by-external-reference-code/{erc}` | `liferay.py: create_category, category` | ✅ Hierarchy kept (EMEA under Sales) |
+| L25 | Object entries accept `taxonomyCategoryIds` (with `enableCategorization: true`), including global-site categories on depot-scoped CMS entries | `load.py: phase_entries` | ✅ Global-site categories on a depot entry |
+| L26 | `POST /o/data-engine/v2.0/sites/{id}/data-definitions/by-content-type/document-library` creates a usable **Document Type**; field types `select`, `date`, `date_time`, `checkbox`, `numeric`, `rich_text` | `liferay.py: create_document_type` (falls back to description) | ⚠️ Also needs a file entry type (JSON-WS `add-file-entry-type`), `fieldReference` and `dataType` per field; `select` doesn't take values, so Choice → `text`. Fixed |
+| L27 | Document upload accepts `documentType: {name, contentFields: [{name, contentFieldValue: {data}}]}`, `externalReferenceCode` and `taxonomyCategoryIds` in the `document` part | `load.py: phase_documents` (retries without the type) | ⚠️ Works once the type exists (L26). Dates need full ISO-8601; date-times must be `yyyy-MM-dd HH:mm`, or they're stored but not indexed (*Unparseable date*). Fixed |
+| L28 | `PUT /o/headless-delivery/v1.0/documents/{id}/permissions` and `/document-folders/{id}/permissions` | `load.py: phase_permissions` | ✅ |
+| L29 | `?doAsUserId=<userId>` on headless create calls makes that user the `creator` (migration user has Impersonate) | `load.py: _as_author` | ❌ `doAsUserId` ignored with Basic auth, even for an Administrator. Docs updated |
+| L30 | Blog posting accepts `datePublished` in the past, `externalReferenceCode` and `friendlyUrlPath` | `load.py: phase_news` | ✅ |
 | L31 | Graph `termStore/sets/{id}` + `/children` works with delegated `TermStore.Read.All` for site-collection and global term sets | `sharepoint.py: term_set` | ☐ |
 | L32 | SP REST taxonomy column values come back as `{Label, TermGuid, WssId}` (single) / arrays (multi) with `odata=nometadata` | `transform.py: term_values` | ☐ |
 | L33 | Streaming download of files over 100 MB via `GetFileByServerRelativeUrl(…)/$value` | `sharepoint.py: download_to` | ☐ |
+
+## SharePoint Server: Subscription Edition, 2019, 2016 (source)
+
+Developed against the [mock](14-mock-sharepoint.md) only (SE, 2019 and 2016 modes). Confirm on a real farm.
+
+| # | Check | Code | Status |
+|---|---|---|---|
+| S-SE1 | NTLM sign-in to `/_api` as a site collection admin; role assignments readable | `sharepoint.py: SharePointClient.__init__` | ☐ (mock ✅) |
+| S-SE2 | Site Pages items return `CanvasContent1` and `PromotedState` with `odata=nometadata` | `sharepoint.py: _server_page_items` | ☐ (mock ✅) |
+| S-SE3 | `CanvasContent1` positions/`sectionFactor` and `webPartData.serverProcessedContent.imageSources` as assumed | `transform.py: canvas_to_layout` | ☐ (mock ✅) |
+| S-SE4 | `/web/siteusers(@v)?@v='i:0#.w\|domain\\user'` and `PeopleManager/GetPropertiesFor` answer | `sharepoint.py: _server_user` | ☐ (mock ✅) |
+| S-SE5 | `/_api/v2.1/termStore/sets/{id}` (+ `/children`, `/terms/{id}/children`) exists on SE | `sharepoint.py: term_set` | ☐ (mock ✅) |
+| S-SE6 | AD groups appear as `c:0+.w\|<SID>`; "All Authenticated Users" as `c:0!.s\|windows` | `sharepoint.py: parse_login` | ☐ (mock ✅) |
+| S-SE7 | `GetFileByServerRelativeUrl(…)/$value` streams large files over NTLM | `sharepoint.py: download_to` | ☐ (mock ✅) |
+| S-SE8 | 2019/2016: `ProcessQuery` with `TaxonomySession` (`{981cbc68-…}`) → `GetDefaultSiteCollectionTermStore` → `GetTermSet` → `GetAllTerms` returns `PathOfTerm` | `sharepoint.py: _csom_term_set` | ☐ (mock ✅) |
+| S-SE9 | 2016: Site Pages has no `CanvasContent1`; wiki HTML is in `WikiField` | `sharepoint.py: classic_pages` | ☐ (mock ✅) |
+| S-SE10 | Publishing pages: Pages library is `BaseTemplate 850`, HTML in `PublishingPageContent` (also on Online classic publishing sites) | `sharepoint.py: classic_pages` | ☐ (mock ✅) |
 
 ## Pages
 
 | # | Check | Code | Status |
 |---|---|---|---|
-| P1 | Fragment keys `BASIC_COMPONENT-heading` / `BASIC_COMPONENT-paragraph` with editable ID `element-text` | `transform.py: _fragment` | ☐ |
-| P2 | `fragmentFields[].value.text.value_i18n` renders HTML (links and `<img>`) in a paragraph | `transform.py: _fragment` | ☐ |
-| P3 | `POST /o/headless-delivery/v1.0/sites/{id}/site-pages` accepts `externalReferenceCode` and `pageSettings.seoSettings` | `liferay.py: create_site_page` | ☐ |
-| P4 | `GET …/site-pages/{friendlyUrlPath}` returns `404` for a missing page (idempotency check) | `liferay.py: site_page` | ☐ |
+| P1 | Fragment keys `BASIC_COMPONENT-heading` / `BASIC_COMPONENT-paragraph` with editable ID `element-text` | `transform.py: _fragment` | ✅ Heading and paragraph render |
+| P2 | `fragmentFields[].value.text.value_i18n` renders HTML (links and `<img>`) in a paragraph | `transform.py: _fragment` | ✅ Links (rewritten) and `<img>` with alt render |
+| P3 | `POST /o/headless-delivery/v1.0/sites/{id}/site-pages` accepts `externalReferenceCode` and `pageSettings.seoSettings` | `liferay.py: create_site_page` | ⚠️ Needs `feature.flag.LPS-178052=true` (`400 UnsupportedOperationException` otherwise); no `externalReferenceCode` in SitePage. Fixed |
+| P4 | `GET …/site-pages/{friendlyUrlPath}` returns `404` for a missing page (idempotency check) | `liferay.py: site_page` | ✅ |
 | P5 | Document `contentUrl` works as an `<img src>` for site members | `load.py: phase_pages` | ☐ |
-| P6 | Navigation menu items of `type: "url"` with nested `navigationMenuItems` | `liferay.py: upsert_navigation_menu` | ☐ |
+| P6 | Navigation menu items of `type: "url"` with nested `navigationMenuItems` | `liferay.py: upsert_navigation_menu` | ⚠️ URL items take `typeSettings: {url, name}`; top-level `url` is rejected. Fixed |
 
 ## End-to-end scenario
 
@@ -98,9 +120,12 @@ Then run chapters 3–9 and record the results here:
 
 | Step | Result | Notes |
 |---|---|---|
-| extract | ☐ | |
-| plan | ☐ | |
-| load --dry-run | ☐ | |
-| load | ☐ | |
-| verify | ☐ | |
+| extract | ☐ | Synthetic extract only; needs a tenant |
+| plan | ✅ |  |
+| load --dry-run | ✅ |  |
+| load | ✅ | 0 errors; re-run is idempotent |
+| verify | ✅ | 9/9 checks match |
 | prompts/03-validate.md | ☐ | |
+
+The same scenario also runs end to end from the [mock SharePoint](14-mock-sharepoint.md), Online and
+Server modes, into Liferay 2026.q3.9: 0 errors, `verify` all checks, re-run a no-op; 2019 and 2016 modes too.

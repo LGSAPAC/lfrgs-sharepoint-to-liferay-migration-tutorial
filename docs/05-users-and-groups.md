@@ -18,9 +18,10 @@ sp2lr load --phase site --phase users --phase groups
 
 | Step | API |
 |---|---|
-| Find site by friendly URL | `GET /o/headless-admin-user/v1.0/sites/by-friendly-url-path/{key}` |
-| Create site if missing (blank, private membership) | `POST /o/headless-site/v1.0/sites` **VERIFY** |
-| Create/update the CMS Space | `PUT /o/headless-asset-library/v1.0/asset-libraries/by-external-reference-code/{erc}` with `"type": "Space"` |
+| Find site by friendly URL | `GET /o/headless-admin-user/v1.0/sites/by-friendly-url-path/{key}` (a missing site answers `400` "No site exists…", not `404`) |
+| Create site if missing (blank, private membership) | `POST /o/headless-site/v1.0/sites` with no template |
+| Create/update the CMS Space | `PUT /o/headless-asset-library/v1.0/asset-libraries/{erc}` with `"type": "Space"` |
+| Connect the Space to the site | `PUT /o/headless-asset-library/v1.0/asset-libraries/{spaceErc}/connected-sites/{siteErc}` with body `{}` |
 
 ```json
 { "assetLibraryKey": "marketing-content", "name": "Marketing Content",
@@ -28,9 +29,11 @@ sp2lr load --phase site --phase users --phase groups
   "settings": {}, "type": "Space" }
 ```
 
-**Manual step:** connect the Space to the site under *CMS → Spaces → Marketing Content → Settings →
-Connected Sites*, so site pages can display Space content. The response exposes a `connect-sites`
-action, but its request body isn't documented yet. See the validation checklist.
+The Space response has two IDs. `id` is the asset library itself; **`siteId` is the Space's group
+ID**, which memberships, roles and `/o/c/{structure}/scopes/{id}` need. The loader stores `siteId`.
+
+Connecting the Space to the site lets site pages display Space content. If the call is refused, the
+loader records it as a manual step (*CMS → Spaces → Marketing Content → Settings → Connected Sites*).
 
 ## 5.2 Users (`users` phase)
 

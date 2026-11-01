@@ -14,7 +14,7 @@ sp2lr load --phase documents
 | File (current version) | **Document** (ERC `sp-doc-<libraryId>-<itemId>`), title = SharePoint Title or file name |
 | Metadata columns (text, number, date, choice, yes/no…) | A **Document Type** per library (`SP <Library>`), with one field per column |
 | Managed metadata columns | **Categories** ([Chapter 6](06-managed-metadata.md)) |
-| Created / Modified / Created By / Modified By | Document type fields `spCreated`, `spModified`, `spCreatedBy`, `spModifiedBy` (plus optional impersonation, see [Chapter 4](04-mapping-and-plan.md#45-created-modified-and-author)) |
+| Created / Modified / Created By / Modified By | Document type fields `spCreated`, `spModified`, `spCreatedBy`, `spModifiedBy` (see [Chapter 4](04-mapping-and-plan.md#45-created-modified-and-author)) |
 | Unique permissions on the library, a folder or a file | Explicit permissions on **every affected folder and document** ([Chapter 10](10-permissions.md#104-documents-and-folders)) |
 | Content approval | Manual: enable a Documents and Media workflow |
 | Version history | Only the current version (warning in `plan.md`) |
@@ -52,28 +52,51 @@ libraries:
 
 ## 8.3 Document types (metadata)
 
-Each library with metadata columns gets one Document Type, created with the data-engine API:
+Each library with metadata columns gets one Document Type. That takes **two calls**: the
+data-engine definition holds the fields, and a *file entry type* makes it a Documents and Media
+document type. With only the first, uploads silently fall back to *Basic Document* and the metadata
+is lost.
 
 ```json
 POST /o/data-engine/v2.0/sites/{siteId}/data-definitions/by-content-type/document-library
 { "name": {"en_US": "SP Policies"}, "dataDefinitionKey": "SP_DOCTYPE_BBBBBBBB…",
   "availableLanguageIds": ["en_US"], "defaultLanguageId": "en_US",
   "dataDefinitionFields": [
-    {"name": "audience", "label": {"en_US": "Audience"}, "fieldType": "select",
-     "customProperties": {"options": {"en_US": [{"label": "HR", "value": "hr"}, {"label": "IT", "value": "it"}]}}},
-    {"name": "expiry", "label": {"en_US": "Expiry"}, "fieldType": "date"},
-    {"name": "spCreated", "label": {"en_US": "Created (SharePoint)"}, "fieldType": "date_time"},
-    {"name": "spCreatedBy", "label": {"en_US": "Created by (SharePoint)"}, "fieldType": "text"} ] }
+    {"name": "audience", "label": {"en_US": "Audience"}, "fieldType": "text",
+     "customProperties": {"dataType": "string", "fieldReference": "audience"}},
+    {"name": "expiry", "label": {"en_US": "Expiry"}, "fieldType": "date",
+     "customProperties": {"dataType": "date", "fieldReference": "expiry"}},
+    {"name": "spCreated", "label": {"en_US": "Created (SharePoint)"}, "fieldType": "date_time",
+     "customProperties": {"dataType": "date", "fieldReference": "spCreated"}},
+    {"name": "spCreatedBy", "label": {"en_US": "Created by (SharePoint)"}, "fieldType": "text",
+     "customProperties": {"dataType": "string", "fieldReference": "spCreatedBy"}} ] }
+
+POST /api/jsonws/invoke
+{ "/dlfileentrytype/add-file-entry-type": {
+    "externalReferenceCode": "sp-doctype-bbbbbbbb-…", "groupId": <siteId>,
+    "dataDefinitionId": <id from the call above>, "fileEntryTypeKey": "SP_DOCTYPE_BBBBBBBB…",
+    "nameMap": {"en_US": "SP Policies"}, "descriptionMap": {}, "serviceContext": {} } }
 ```
+
+Every field needs a unique **`fieldReference`** (otherwise: *"Field references [] were defined more
+than once"*) and a **`dataType`** (otherwise the field is treated as transient and every upload fails
+with *"Value should not be set for transient field"*).
 
 | Column type | Document type field |
 |---|---|
 | Text, URL, Person | `text` |
 | Multiple lines (plain / rich) | `text` (multiline) / `rich_text` |
 | Number, Currency | `numeric` |
-| Date / Date and time | `date` / `date_time` |
+| Date / Date and time | `date` / `date_time`. Dates are sent as ISO-8601 (`2027-01-01T00:00:00Z`); date-times as `2023-05-01 08:00` (UTC), the only form the search indexer parses |
 | Yes/No | `checkbox` |
-| Choice / Multi-choice | `select` (single / multiple) |
+| Choice / Multi-choice | `text`, holding the choice as SharePoint shows it (`HR`; multi-choice comma-separated) |
+
+> A `date_time` value in ISO-8601 is stored, but the search indexer logs *"Unparseable date"* and
+> skips it, so the field can't be searched or sorted. `yyyy-MM-dd HH:mm` is stored and indexed.
+
+> Choice columns become text fields because, in 2026.Q3, a `select` field on a document type doesn't
+> take a value through the headless upload: it's stored empty whatever is sent. The value is kept
+> exactly, but editors get a text box instead of a dropdown.
 
 Documents are then uploaded into their folder with the type and values:
 
@@ -83,13 +106,13 @@ POST /o/headless-delivery/v1.0/document-folders/{folderId}/documents      (multi
   document = {"externalReferenceCode": "sp-doc-bbbbbbbb-…-11", "title": "Employee Handbook",
               "taxonomyCategoryIds": [41207],
               "documentType": {"name": "SP Policies",
-                               "contentFields": [{"name": "audience", "contentFieldValue": {"data": "hr"}},
-                                                 {"name": "expiry", "contentFieldValue": {"data": "2027-01-01"}}, …]}}
+                               "contentFields": [{"name": "audience", "contentFieldValue": {"data": "HR"}},
+                                                 {"name": "expiry", "contentFieldValue": {"data": "2027-01-01T00:00:00Z"}}, …]}}
 ```
 
 **Never lose a file.** If the document type can't be created, or a document is rejected because of
 its metadata, the loader uploads the file again **without** the type. It writes the metadata into the
-description in a readable form (`Audience: hr` / `Expiry: 2027-01-01`) and records a manual
+description in a readable form (`Audience: HR` / `Expiry: 2027-01-01T00:00:00Z`) and records a manual
 follow-up. Set `libraries.metadata: description` to use that mode from the start.
 
 ## 8.4 Idempotency and re-runs

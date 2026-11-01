@@ -23,7 +23,7 @@ services:
 
   liferay:
     # Pin the exact 2026.Q3 build you are validating against
-    image: liferay/dxp:${LIFERAY_TAG:-2026.q3.0}
+    image: liferay/dxp:${LIFERAY_TAG:-2026.q3.9}
     depends_on:
       postgres:
         condition: service_healthy

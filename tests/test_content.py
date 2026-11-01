@@ -24,15 +24,17 @@ def test_library_folders_documents_and_permissions(extract_dir):
     assert handbook["folderErc"] == hr["erc"] and readme["folderErc"] == root["erc"]
     # Liferay doesn't inherit permissions: the file under the restricted folder carries the folder's scope
     assert handbook["permissionScope"] == "10" and readme["permissionScope"] is None
-    assert handbook["metadata"] == {"audience": "hr", "expiry": "2027-01-01",
-                                    "spCreated": "2023-05-01T08:00:00Z", "spModified": "2024-06-01T08:00:00Z",
+    assert handbook["metadata"] == {"audience": "HR", "expiry": "2027-01-01T00:00:00Z",
+                                    "spCreated": "2023-05-01 08:00", "spModified": "2024-06-01 08:00",
                                     "spCreatedBy": "jane@contoso.com", "spModifiedBy": "jane@contoso.com"}
     assert handbook["terms"] == ["t-emea"]
     assert lib["skippedFiles"] == ["/sites/marketing/Policies/video.mp4: larger than 250 MB"]
     assert any("only the current version" in w for w in plan["report"]["warnings"])
 
     ddm = {f["name"]: f["fieldType"] for f in lib["documentType"]["dataDefinition"]["dataDefinitionFields"]}
-    assert ddm["audience"] == "select" and ddm["expiry"] == "date" and ddm["spCreated"] == "date_time"
+    # Choice -> text (2026.Q3 select fields don't take values through the upload); every field has a dataType
+    assert ddm["audience"] == "text" and ddm["expiry"] == "date" and ddm["spCreated"] == "date_time"
+    assert all(f["customProperties"]["dataType"] for f in lib["documentType"]["dataDefinition"]["dataDefinitionFields"])
     assert "region" not in ddm  # managed metadata -> categories, not a field
     assert {g["level"] for g in lib["grants"]["10"]} == {"Full Control", "Read"}
 
@@ -114,7 +116,7 @@ def test_dry_run_documents_taxonomy_news(extract_dir, monkeypatch):
     assert len(docs) == 2
     handbook = next(json.loads(c["data"]["document"]) for c in docs if "Employee Handbook" in c["data"]["document"])
     assert handbook["externalReferenceCode"] == f"sp-doc-{POLICIES}-11"
-    assert handbook["documentType"]["contentFields"][0] == {"name": "audience", "contentFieldValue": {"data": "hr"}}
+    assert handbook["documentType"]["contentFields"][0] == {"name": "audience", "contentFieldValue": {"data": "HR"}}
     assert handbook["taxonomyCategoryIds"]
 
     # Restricted folder + the document inside it get explicit permissions; the other document doesn't

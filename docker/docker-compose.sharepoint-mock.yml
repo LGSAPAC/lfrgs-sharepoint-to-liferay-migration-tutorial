@@ -1,0 +1,54 @@
+# Mock SharePoint for the tutorial, one service per platform. Not real SharePoint: the
+# responses are modelled on Microsoft's documentation (see mock/sharepoint_mock/scenario.py).
+#
+#   docker compose -f docker/docker-compose.sharepoint-mock.yml up -d --build
+#
+# SharePoint Online  -> http://localhost:8091/sites/marketing   (Graph at /v1.0)
+#   SP_PLATFORM=online SP_AUTH_MODE=none SP_GRAPH_URL=http://localhost:8091/v1.0
+# SharePoint Server  -> http://localhost:8092/sites/marketing   Subscription Edition (REST only, NTLM)
+#                       http://localhost:8093/sites/marketing   2019 (no v2.1 term store REST)
+#                       http://localhost:8094/sites/marketing   2016 (no modern pages either)
+#   SP_PLATFORM=server SP_USERNAME='CONTOSO\spadmin' SP_PASSWORD='Passw0rd!'
+
+services:
+  sharepoint-online:
+    build: { context: .., dockerfile: docker/sharepoint-mock/Dockerfile }
+    image: sp2lr/sharepoint-mock:latest
+    environment:
+      MOCK_MODE: online
+      MOCK_SITE_URL: http://localhost:8091/sites/marketing
+      PORT: "8091"
+    ports: ["8091:8091"]
+
+  sharepoint-server:
+    image: sp2lr/sharepoint-mock:latest
+    depends_on: [sharepoint-online]   # reuses the image built by sharepoint-online
+    environment:
+      MOCK_MODE: server
+      MOCK_SITE_URL: http://localhost:8092/sites/marketing
+      MOCK_NTLM_USER: CONTOSO\spadmin
+      MOCK_NTLM_PASSWORD: Passw0rd!
+      PORT: "8092"
+    ports: ["8092:8092"]
+
+  sharepoint-server2019:
+    image: sp2lr/sharepoint-mock:latest
+    depends_on: [sharepoint-online]
+    environment:
+      MOCK_MODE: server2019
+      MOCK_SITE_URL: http://localhost:8093/sites/marketing
+      MOCK_NTLM_USER: CONTOSO\spadmin
+      MOCK_NTLM_PASSWORD: Passw0rd!
+      PORT: "8093"
+    ports: ["8093:8093"]
+
+  sharepoint-server2016:
+    image: sp2lr/sharepoint-mock:latest
+    depends_on: [sharepoint-online]
+    environment:
+      MOCK_MODE: server2016
+      MOCK_SITE_URL: http://localhost:8094/sites/marketing
+      MOCK_NTLM_USER: CONTOSO\spadmin
+      MOCK_NTLM_PASSWORD: Passw0rd!
+      PORT: "8094"
+    ports: ["8094:8094"]

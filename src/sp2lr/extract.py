@@ -158,10 +158,11 @@ def extract(sp: SharePointClient, out: Path, with_attachments: bool = True,
     for p in sp.list_pages():
         full = sp.get_page(p["id"])
         full["_images"] = _download_page_images(sp, full, root)
-        li = sp.page_list_item(p["name"])
+        li = sp.page_list_item(p["name"], full.get("_listId"))
         full["_listItem"] = {k: li.get(k) for k in ("Id", "Created", "Modified", "FirstPublishedDate", "Author", "Editor")}
         if li.get("HasUniqueRoleAssignments"):
-            perms["pages"][p["name"]] = sp.role_assignments("item", _site_pages_list_id(sp), li["Id"])
+            perms["pages"][p["name"]] = sp.role_assignments("item", full.get("_listId") or _site_pages_list_id(sp),
+                                                            li["Id"])
         pages.append(full)
     _write(root / "pages.json", pages)
     summary["pages"] = len(pages)
@@ -172,8 +173,8 @@ def extract(sp: SharePointClient, out: Path, with_attachments: bool = True,
     return summary
 
 
-def _site_pages_list_id(sp: SharePointClient) -> str:
-    return sp.rest("/web/lists/getbytitle('Site Pages')?$select=Id")["Id"]
+def _site_pages_list_id(sp: SharePointClient) -> str | None:
+    return sp._site_pages_list_id()  # by template (119), so it works on non-English sites
 
 
 def _download_attachments(sp: SharePointClient, l: dict, item: dict, root: Path) -> list[dict]:

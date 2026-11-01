@@ -72,6 +72,19 @@ class Loader:
                 log.error("%s failed: %s", what, e)
                 self.errors.append(f"{what}: {e}")
             return None
+        except OSError as e:
+            # e.g. a file missing from out/extract: record it and keep migrating the rest
+            log.error("%s failed: %s", what, e)
+            self.errors.append(f"{what}: {e}")
+            return None
+
+    @staticmethod
+    def _list_key(by_list: dict, list_id: str) -> str | None:
+        """The key of `list_id` in a dict keyed by SharePoint list ID, ignoring case
+        (lookup columns may reference a list GUID in a different case)."""
+        if list_id in by_list:
+            return list_id
+        return next((k for k in by_list if k.lower() == list_id.lower()), None)
 
     # ------------------------------------------------------------------ site
     def phase_site(self) -> None:
@@ -81,14 +94,19 @@ class Loader:
             site = self._try("create site", self.lr.create_site, s["name"], s["key"], s["erc"],
                              manual=f"Create site '{s['name']}' with friendly URL /{s['key']}, then re-run phase site")
         if site:
-            self.state["site"] = {"id": site["id"], "key": s["key"]}
+            site_erc = site.get("externalReferenceCode") or s["erc"]
+            self.state["site"] = {"id": site["id"], "key": s["key"], "erc": site_erc}
             log.info("Site %s -> %s", s["name"], site["id"])
         space = self._try("upsert space", self.lr.upsert_space, sp["erc"], sp["key"], sp["name"], sp["description"])
         if space:
-            self.state["space"] = {"id": space["id"], "erc": sp["erc"], "key": sp["key"]}
-            log.info("Space %s -> %s", sp["name"], space["id"])
-        # Connecting a space to a site is done in the CMS UI (Space > Settings > Sites)
-        self.manual.append(f"Connect Space '{sp['name']}' to site '{s['name']}' (CMS > Spaces > {sp['name']} > Settings > Connected Sites)")
+            # "id" is the space's group ID (siteId in the response): memberships and /scopes/{id} use it
+            self.state["space"] = {"id": space.get("siteId", space["id"]), "assetLibraryId": space["id"],
+                                   "erc": sp["erc"], "key": sp["key"]}
+            log.info("Space %s -> group %s", sp["name"], self.state["space"]["id"])
+        if site and space:
+            self._try("connect space to site", self.lr.connect_space_to_site, sp["erc"], self.state["site"]["erc"],
+                      manual=f"Connect Space '{sp['name']}' to site '{s['name']}' "
+                             f"(CMS > Spaces > {sp['name']} > Settings > Connected Sites)")
 
     # ----------------------------------------------------------------- users
     def phase_users(self) -> None:
@@ -246,12 +264,20 @@ class Loader:
                     f"{body['name']} > Layouts) and grant the site roles access in Site Settings > Roles")
 
         # Relationships for lookup columns (after every definition exists)
+        targets = {lp["listId"]: lp["target"] for lp in self.plan["lists"]}
         for lp in self.plan["lists"]:
             src = defs.get(lp["listId"])
             for lk in lp["lookups"]:
-                tgt = defs.get(lk["targetListId"]) or next(
-                    (v for k, v in defs.items() if k.lower() == lk["targetListId"]), None)
+                tgt_key = self._list_key(defs, lk["targetListId"])
+                tgt = defs.get(tgt_key) if tgt_key else None
                 if not src or not tgt:
+                    continue
+                if (lp["target"] == "cms") != (targets.get(tgt_key) == "cms"):
+                    # 2026.Q3: a depot-scoped CMS structure can only relate to other depot-scoped structures
+                    self.manual.append(
+                        f"Lookup '{lk['field']}' on '{lp['listTitle']}' points to a list migrated to the other "
+                        "scenario (CMS structure vs. site Object), which Liferay can't relate. Move both lists to the "
+                        "same target in mapping.yaml (lists.overrides) and re-run, or keep the value as text.")
                     continue
                 if lk["multi"]:
                     owner, o1, o2, rtype = src, src, tgt, "manyToMany"
@@ -266,7 +292,7 @@ class Loader:
                 })
                 if rel:
                     src.setdefault("relationships", {})[lk["field"]] = {
-                        "name": lk["relationshipName"], "type": rtype, "target": lk["targetListId"]}
+                        "name": lk["relationshipName"], "type": rtype, "target": tgt_key}
 
     def _object_views(self, definition_id: int, lp: dict) -> None:
         path = f"/o/object-admin/v1.0/object-definitions/{definition_id}/object-views"
@@ -303,6 +329,10 @@ class Loader:
                 for field, att in zip(lp["attachmentFields"], item.get("_attachments", [])):
                     body[field] = {"name": att["fileName"],
                                    "fileBase64": base64.b64encode(Path(att["localPath"]).read_bytes()).decode()}
+                if lp.get("attachmentLinksField") and item.get("_attachments"):
+                    links = self._space_attachments(lp, item)
+                    if links:
+                        body[lp["attachmentLinksField"]] = "\n".join(links)
                 cat_ids = self._category_ids(tv["guid"] for tf in lp.get("taxonomyFields", [])
                                              for tv in t.term_values(item, tf["field"]))
                 if cat_ids:
@@ -315,6 +345,24 @@ class Loader:
             log.info("%s: %d/%d entries", lp["listTitle"], len(ids), len(items))
         self.save()
         self._link_relationships()
+
+    def _space_attachments(self, lp: dict, item: dict) -> list[str]:
+        """CMS entries can't hold attachments in 2026.Q3: upload them to the Space, return "name: url" lines."""
+        al_id = self.state["space"].get("assetLibraryId")
+        done = self.state.setdefault("spaceAttachments", {})
+        lines = []
+        for n, att in enumerate(item.get("_attachments", []), start=1):
+            erc = f"sp-att-{lp['listId']}-{item['Id']}-{n}"
+            url = done.get(erc)
+            if not url:
+                doc = (self.lr.space_document_by_erc(al_id, erc) if not self.lr.dry_run else None) or self._try(
+                    f"attachment {att['fileName']}", self.lr.upload_space_document, al_id, att["localPath"], erc,
+                    f"{lp['listTitle']} #{item['Id']} - {att['fileName']}")
+                if not doc:
+                    continue
+                url = done[erc] = doc.get("contentUrl") or f"/documents/{doc['id']}"
+            lines.append(f"{att['fileName']}: {url}")
+        return lines
 
     def _link_relationships(self) -> None:
         defs, entries = self.state["definitions"], self.state["entries"]
@@ -334,7 +382,8 @@ class Loader:
                     rel = rels.get(lk["field"])
                     if not rel:
                         continue
-                    targets = [entries.get(rel["target"], {}).get(str(tid))
+                    target_key = self._list_key(defs, rel["target"]) or rel["target"]
+                    targets = [entries.get(self._list_key(entries, target_key) or target_key, {}).get(str(tid))
                                for tid in t.lookup_target_ids(item, lk["field"], lk["multi"])]
                     targets = [x for x in targets if x]
                     if rel["type"] == "manyToMany":
@@ -342,7 +391,8 @@ class Loader:
                             self._try("relate", self.lr.call, "PUT",
                                       f"{src['restContextPath']}/{src_id}/{rel['name']}/{tid}")
                     elif targets:
-                        field = rel_fields.get(rel["name"], f"r_{rel['name']}_c_{defs[rel['target']]['name'][:1].lower()}{defs[rel['target']]['name'][1:]}Id")
+                        tname = defs.get(target_key, {}).get("name", "")
+                        field = rel_fields.get(rel["name"], f"r_{rel['name']}_c_{tname[:1].lower()}{tname[1:]}Id")
                         self._try("relate", self.lr.call, "PATCH", f"{src['restContextPath']}/{src_id}",
                                   {field: targets[0]})
 
@@ -430,13 +480,17 @@ class Loader:
             strategy = lib.get("metadataStrategy", "documentType")
             if strategy == "documentType" and dt["fields"] and dt["erc"] not in doc_types:
                 key = dt["dataDefinition"]["dataDefinitionKey"]
-                existing = self.lr.document_type_by_key(site_id, key) if not self.lr.dry_run else None
-                created = existing or self._try(
-                    f"document type {dt['name']}", self.lr.create_document_type, site_id, dt["dataDefinition"],
-                    manual=f"Create document type '{dt['name']}' (Documents and Media > Document Types); "
-                           f"metadata was kept in each document's description")
-                if created:
-                    doc_types[dt["erc"]] = created["id"]
+                manual = (f"Create document type '{dt['name']}' (Documents and Media > Document Types); "
+                          f"metadata was kept in each document's description")
+                fet = self.lr.file_entry_type_by_erc(site_id, dt["erc"]) if not self.lr.dry_run else None
+                if not fet:
+                    existing = self.lr.document_type_by_key(site_id, key) if not self.lr.dry_run else None
+                    ddef = existing or self._try(f"document type fields {dt['name']}", self.lr.create_document_type,
+                                                 site_id, dt["dataDefinition"], manual=manual)
+                    fet = ddef and self._try(f"document type {dt['name']}", self.lr.create_file_entry_type, site_id,
+                                             ddef["id"], key, dt["name"], dt["erc"], manual=manual)
+                if fet:
+                    doc_types[dt["erc"]] = int(fet.get("fileEntryTypeId") or fet["id"])
             use_type = strategy == "documentType" and dt["erc"] in doc_types
 
             for f in lib["folders"]:
@@ -448,6 +502,9 @@ class Loader:
                     folders[f["erc"]] = res["id"]
             for d in lib["documents"]:
                 if d["erc"] in docs or d["folderErc"] not in folders:
+                    continue
+                if not Path(d["localPath"]).is_file():
+                    self.errors.append(f"document {d['fileName']}: local file {d['localPath']} is missing; re-run extract")
                     continue
                 document = {"externalReferenceCode": d["erc"], "title": d["title"]}
                 if use_type:

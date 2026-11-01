@@ -80,8 +80,9 @@ def test_object_views_and_field_extras(extract_dir):
     orders = next(lp for lp in plan["lists"] if lp["listId"] == ORDERS)
     all_items, open_orders = orders["objectViews"]
     assert all_items["defaultObjectView"] is True
-    assert [c["objectFieldName"] for c in all_items["objectViewColumns"]] == ["title", "quantity", "orderStatus"]
-    assert all_items["objectViewSortColumns"] == [{"objectFieldName": "dateCreated", "priority": 0, "sortOrder": "desc"}]
+    # The sort column is added to the columns: 2026.Q3 rejects a sort on a column the view doesn't show
+    assert [c["objectFieldName"] for c in all_items["objectViewColumns"]] == ["title", "quantity", "orderStatus", "createDate"]
+    assert all_items["objectViewSortColumns"] == [{"objectFieldName": "createDate", "priority": 0, "sortOrder": "desc"}]
     assert any("Open orders" in m and "filter" in m for m in plan["report"]["manual"])
     status = next(f for f in orders["definition"]["objectFields"] if f["name"] == "orderStatus")
     assert {"name": "defaultValue", "value": "new"} in status["objectFieldSettings"]
@@ -125,11 +126,13 @@ def test_dry_run_load(extract_dir, monkeypatch):
     loader.run(["site", "users", "groups", "structures", "entries", "permissions"])
     calls = [json.loads(l) for l in (extract_dir / "dry-run.jsonl").read_text().splitlines()]
     paths = [c["path"] for c in calls]
-    assert "/o/headless-asset-library/v1.0/asset-libraries/by-external-reference-code/" + loader.plan["space"]["erc"] in paths
+    assert "/o/headless-asset-library/v1.0/asset-libraries/" + loader.plan["space"]["erc"] in paths
     assert sum(p.startswith("/o/headless-admin-user/v1.0/user-accounts/") for p in paths) == 2
     assert any(c["path"] == "/api/jsonws/invoke" and "/usergroup/add-group-user-groups" in c["body"] for c in calls)
     assert sum(p == "/o/object-admin/v1.0/object-definitions" for p in paths) == 2
-    assert any("/object-relationships" in p for p in paths)
+    # Orders (Object) -> Product Catalog (CMS structure): Liferay can't relate the two scopes
+    assert not any("/object-relationships" in p for p in paths)
+    assert any("Lookup 'Product' on 'Orders'" in m for m in loader.state["manual"])
     assert sum("/by-external-reference-code/sp-item-" in p for p in paths) == 4
     assert sum(p.endswith("/object-views") for p in paths) == 2  # Orders is an Object
     entry_perms = [c for c in calls if c["method"] == "PUT" and "/permissions" in c["path"]

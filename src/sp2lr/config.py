@@ -21,6 +21,9 @@ def load_dotenv(path: str | Path = ".env") -> None:
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
+GRAPH_URL = "https://graph.microsoft.com/v1.0"
+
+
 @dataclass(frozen=True)
 class SharePointSettings:
     tenant_id: str
@@ -30,6 +33,16 @@ class SharePointSettings:
     auth_mode: str = "device_code"
     cert_path: str = ""
     cert_thumbprint: str = ""
+    # "online" = SharePoint Online (Graph + REST, Entra ID sign-in)
+    # "server" = SharePoint Server Subscription Edition on-premises (REST only, Windows sign-in)
+    platform: str = "online"
+    graph_url: str = GRAPH_URL
+    username: str = ""  # SharePoint Server: DOMAIN\user
+    password: str = ""
+
+    @property
+    def is_server(self) -> bool:
+        return self.platform == "server"
 
     @property
     def site_path(self) -> str:
@@ -55,14 +68,24 @@ def _req(name: str) -> str:
 def sharepoint_settings() -> SharePointSettings:
     load_dotenv()
     site_url = _req("SP_SITE_URL")
+    platform = os.environ.get("SP_PLATFORM", "online").strip().lower()
+    if platform not in ("online", "server"):
+        raise SystemExit(f"SP_PLATFORM must be 'online' or 'server', not '{platform}'")
+    auth_mode = os.environ.get("SP_AUTH_MODE", "ntlm" if platform == "server" else "device_code")
+    entra = platform == "online" and auth_mode != "none"
+    windows = platform == "server" and auth_mode == "ntlm"
     return SharePointSettings(
-        tenant_id=_req("SP_TENANT_ID"),
-        client_id=_req("SP_CLIENT_ID"),
+        tenant_id=_req("SP_TENANT_ID") if entra else os.environ.get("SP_TENANT_ID", ""),
+        client_id=_req("SP_CLIENT_ID") if entra else os.environ.get("SP_CLIENT_ID", ""),
         hostname=os.environ.get("SP_HOSTNAME") or urlparse(site_url).hostname or "",
         site_url=site_url,
-        auth_mode=os.environ.get("SP_AUTH_MODE", "device_code"),
+        auth_mode=auth_mode,
         cert_path=os.environ.get("SP_CERT_PATH", ""),
         cert_thumbprint=os.environ.get("SP_CERT_THUMBPRINT", ""),
+        platform=platform,
+        graph_url=os.environ.get("SP_GRAPH_URL", GRAPH_URL).rstrip("/"),
+        username=_req("SP_USERNAME") if windows else os.environ.get("SP_USERNAME", ""),
+        password=_req("SP_PASSWORD") if windows else os.environ.get("SP_PASSWORD", ""),
     )
 
 
@@ -78,6 +101,7 @@ def liferay_settings() -> LiferaySettings:
 
 def out_dir() -> Path:
     load_dotenv()
-    p = Path(os.environ.get("SP2LR_OUT", "./out"))
+    # Absolute, so the file paths recorded at extract time still resolve if load runs from elsewhere
+    p = Path(os.environ.get("SP2LR_OUT", "./out")).resolve()
     p.mkdir(parents=True, exist_ok=True)
     return p

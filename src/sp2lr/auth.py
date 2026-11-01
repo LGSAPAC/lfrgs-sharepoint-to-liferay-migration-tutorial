@@ -1,6 +1,10 @@
 """Microsoft Entra ID tokens for Microsoft Graph and the SharePoint REST API.
 
-Two modes:
+SharePoint Server (SP_PLATFORM=server) doesn't use tokens: it signs in with NTLM,
+see SharePointClient. SP_AUTH_MODE=none skips sign-in entirely (only for the
+mock SharePoint server in docker/sharepoint-mock).
+
+Two Entra ID modes:
   * device_code  - delegated; the signed-in user must be a Site Collection Admin
                    of the source site (needed to enumerate role assignments).
   * certificate  - app-only; requires Sites.FullControl.All (or Sites.Selected
@@ -20,6 +24,9 @@ from .config import SharePointSettings
 
 # Shared by the CLI and the MCP server, wherever their working directory is
 CACHE_FILE = Path(os.environ.get("SP2LR_TOKEN_CACHE", Path.home() / ".sp2lr" / "token_cache.json"))
+
+# Sent when SP_AUTH_MODE=none; only the mock SharePoint server accepts it
+MOCK_TOKEN = "sp2lr-mock-token"
 
 GRAPH_SCOPES_DELEGATED = [
     "https://graph.microsoft.com/Sites.Read.All",
@@ -43,6 +50,9 @@ class TokenProvider:
         # prompt on a stdio server, so it relies on `sp2lr login` having filled the cache.
         self.interactive = interactive
         self._cache = msal.SerializableTokenCache()
+        self._app = None
+        if settings.auth_mode in ("none", "ntlm"):
+            return  # no Entra ID: the mock, or SharePoint Server with Windows sign-in
         if CACHE_FILE.exists():
             self._cache.deserialize(CACHE_FILE.read_text())
         authority = f"https://login.microsoftonline.com/{settings.tenant_id}"
@@ -68,11 +78,15 @@ class TokenProvider:
             CACHE_FILE.chmod(0o600)
 
     def graph_token(self) -> str:
+        if self._app is None:
+            return MOCK_TOKEN
         if self.settings.auth_mode == "certificate":
             return self._app_only("https://graph.microsoft.com/.default")
         return self._delegated(GRAPH_SCOPES_DELEGATED)
 
     def sharepoint_token(self) -> str:
+        if self._app is None:
+            return MOCK_TOKEN
         if self.settings.auth_mode == "certificate":
             return self._app_only(f"https://{self.settings.hostname}/.default")
         return self._delegated(sharepoint_scopes_delegated(self.settings.hostname))

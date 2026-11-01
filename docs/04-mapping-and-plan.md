@@ -132,15 +132,19 @@ audit:
 They're ordinary fields, so they can be sorted and filtered in object views, shown in display page
 templates and searched.
 
-**`audit.impersonate`** creates each entry, document and blog posting **as its original author**, by
-adding `?doAsUserId=<liferayUserId>` to the create call. Then `creator` in Liferay is the real person,
-not the migration account. Requirements and limits:
+**`audit.impersonate`** is meant to create each entry, document and blog posting **as its original
+author**, by adding `?doAsUserId=<liferayUserId>` to the create call.
+
+> **Tested on 2026.Q3.9: it has no effect.** The headless APIs ignore `doAsUserId` with Basic auth,
+> even for an Administrator, so `creator` stays the migration account (checklist item L29). Keep
+> `impersonate: false` and rely on `spCreatedBy` / `spCreated`, which always hold the SharePoint values.
+
+If a later build honours it, these limits apply:
 
 * The migration account needs the *Impersonate* permission (Administrators have it).
 * The author must exist in Liferay. Authors who've left the company fall back to the migration user.
 * `dateCreated` is still the migration date. Only `spCreated` keeps the original date, except for
   blog postings, whose `datePublished` is set from SharePoint.
-* Confirm on your build that headless endpoints honour `doAsUserId` (checklist item L29).
 
 ## 4.6 Build and review the plan
 

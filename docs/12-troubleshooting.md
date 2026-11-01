@@ -30,7 +30,14 @@
 | `413` on attachments | Upload limit | `dl.file.max.size` / `upload.servlet.request.impl.max.size` in `portal-ext.properties` |
 | Page created but empty | Fragment key or editable ID differs in your build | See [VALIDATION-CHECKLIST.md](VALIDATION-CHECKLIST.md) items P1–P2 |
 | Manual step "Create document type …" | The data-engine call was rejected | Files are already uploaded, with metadata in the description. Create the type in the UI and re-run with `libraries.metadata: documentType` after deleting those documents, or keep the description mode |
-| Every record shows the migration user as creator | `audit.impersonate` is off, or `doAsUserId` is ignored by your build | The original values are in `spCreatedBy`/`spCreated`. See checklist L29 |
+| Every record shows the migration user as creator | Expected: 2026.Q3 ignores `doAsUserId` on headless calls with Basic auth | The original values are in `spCreatedBy`/`spCreated`. See checklist L29 |
+| Every entry write to a CMS structure answers `404 NOT_FOUND` (reads work) | Structure lacks `acceptAllGroups` | The loader sets `objectDefinitionSettings` `acceptAllGroups: true`; for a structure created before this fix, re-run `--phase structures` |
+| `POST …/site-pages` answers `400 UnsupportedOperationException` | Page creation is behind a feature flag in 2026.Q3 | Set `feature.flag.LPS-178052=true` in `portal-ext.properties` and restart |
+| `/o/mcp` answers `404` | MCP server not enabled for the instance | Enable it in *Instance Settings → Platform → MCP Server*, or ship the `MCPServerConfiguration.config` file from `docker/liferay/files/osgi/configs` |
+| Documents uploaded as *Basic Document*, metadata empty | Only the data-engine definition exists, no file entry type | Fixed in the loader (it creates both); re-run `--phase documents` after deleting the affected documents |
+| `The value is invalid for object field "attachment1"` on a CMS entry | CMS structures don't take attachment values in 2026.Q3 | Re-run `plan`: CMS lists now put attachments in the Space and link them from `spAttachments` |
+| `401` from SharePoint Server | NTLM credentials wrong, or the farm only allows Kerberos | Check `SP_USERNAME` (`DOMAIN\user`) / `SP_PASSWORD`; Kerberos-only isn't supported yet ([Chapter 13](13-sharepoint-server.md)) |
+| `An object definition scoped by depot can only be related to object definitions of the same scope` | Lookup between a CMS structure and a site Object | Put both lists on the same target in `mapping.yaml` (`lists.overrides`) |
 | Categories missing on CMS entries | Vocabulary created in the site, not the Global site | Use `taxonomy.scope: global`, or create the vocabulary in the Space |
 
 ## Resetting a sandbox

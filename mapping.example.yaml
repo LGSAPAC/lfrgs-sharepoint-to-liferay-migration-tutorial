@@ -40,7 +40,7 @@ news:
 
 audit:
   fields: true               # spCreated / spModified / spCreatedBy / spModifiedBy on every migrated record
-  impersonate: false         # create records as their original author via doAsUserId (needs Impersonate)
+  impersonate: false         # doAsUserId; ignored by 2026.Q3 headless APIs (tested), so leave off
 
 pages:
   skip: [Template.aspx]
