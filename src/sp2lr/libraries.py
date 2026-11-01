@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import posixpath
+from datetime import datetime, timezone
 
 from . import transform as t
 
@@ -102,6 +103,10 @@ def metadata_values(doc_type: dict, item: dict) -> dict[str, str]:
             v = ", ".join(x["key"] if isinstance(x, dict) else str(x) for x in v)
         elif m["objectField"]["businessType"] == "Date" and len(str(v)) == 10:
             v = f"{v}T00:00:00Z"  # date fields only take a full ISO-8601 timestamp
+        elif m["objectField"]["businessType"] == "DateTime":
+            # date_time fields: the upload stores any ISO form, but the search indexer only parses
+            # "yyyy-MM-dd HH:mm" (UTC here); anything else logs "Unparseable date" and isn't indexed
+            v = datetime.fromisoformat(str(v).replace("Z", "+00:00")).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M")
         out[m["name"]] = str(v).lower() if isinstance(v, bool) else str(v)
     return out
 

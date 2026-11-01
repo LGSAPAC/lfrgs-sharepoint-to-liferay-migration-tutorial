@@ -116,7 +116,7 @@ def test_verify_all_present(tmp_path):
     report = verify(lr, out)
 
     assert [r["area"] for r in report["rows"] if not r["ok"]] == []
-    assert len(report["rows"]) == 9
+    assert len(report["rows"]) == 11  # incl. Site and CMS Space
     assert "| Pages | 2 | 2 | yes |" in (out / "verify.md").read_text()
 
 
@@ -139,7 +139,7 @@ class FakeSharePoint:
     def list_views(self, lid): return next(x.get("views", []) for x in EXTRACT["lists.json"] if x["list"]["Id"] == lid)
     def term_set(self, tid): return EXTRACT["termsets.json"][tid]
     def list_pages(self): return [{"id": p["id"], "name": p["name"]} for p in EXTRACT["pages.json"]]
-    def page_list_item(self, name): return {"Id": 1}
+    def page_list_item(self, name, list_id=None): return {"Id": 1}
     def download(self, rel): return b"img"
 
     def role_assignments(self, scope="web", list_id=None, item_id=None):
@@ -196,3 +196,15 @@ def test_dry_run_never_reads_records_it_only_pretended_to_create(tmp_path):
 
     assert loader.state["errors"] == []
     assert not any("/9000" in p for p in seen)
+
+
+def test_verify_reports_a_missing_site_instead_of_crashing(tmp_path):
+    out = _write_extract(tmp_path, EXTRACT)
+    build_plan(out, {})
+    (out / "state.json").write_text(json.dumps({"errors": ["create site: POST /o/headless-site/v1.0/sites -> 500"]}))
+    lr = LiferayClient(LiferaySettings("http://liferay.invalid", "u", "p"))
+    lr.http = httpx.Client(base_url="http://liferay.invalid", transport=httpx.MockTransport(lambda r: httpx.Response(404)))
+    report = verify(lr, out)
+    site = next(r for r in report["rows"] if r["area"] == "Site")
+    assert not site["ok"] and "not created" in site["note"]
+    assert "create site" in (out / "verify.md").read_text()

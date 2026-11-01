@@ -1,9 +1,10 @@
 """The test site from docs/VALIDATION-CHECKLIST.md ("End-to-end scenario"), as SharePoint returns it.
 
 Values are the raw API shapes (REST with odata=nometadata, Graph v1.0) that sp2lr reads.
-`build(mode, site_url)` returns the scenario for SharePoint Online ("online") or
-SharePoint Server Subscription Edition ("server"); the two differ where the platforms do:
-login names, groups, and how modern pages are read.
+`build(mode, site_url)` returns the scenario for SharePoint Online ("online"), SharePoint Server
+Subscription Edition ("server"), 2019 ("server2019") or 2016 ("server2016"). They differ where the
+platforms do: login names, groups, how pages and the term store are read, and which fields exist
+(2016 has no modern pages, so its pages are wiki pages).
 
 These shapes are written from Microsoft's documentation and the code's expectations. They
 are not captured from a live tenant: the mock is for developing and regression-testing the
@@ -23,6 +24,7 @@ PRODUCTS = "aaaaaaaa-0000-0000-0000-000000000001"
 ORDERS = "aaaaaaaa-0000-0000-0000-000000000002"
 POLICIES = "bbbbbbbb-0000-0000-0000-000000000001"
 SITE_PAGES = "dddddddd-0000-0000-0000-000000000001"
+PUBLISHING_PAGES = "dddddddd-0000-0000-0000-000000000002"
 TERMSET = "cccccccc-0000-0000-0000-000000000001"
 SALES_GROUP = "eeeeeeee-0000-0000-0000-000000000001"  # Entra security group (Online)
 SALES_SID = "s-1-5-21-1004336348-1177238915-682003330-1105"  # AD group (Server)
@@ -44,9 +46,24 @@ def _field(fid, name, title, kind, **kw):
             "ReadOnlyField": False, "FromBaseType": False, "Required": kw.pop("Required", False), **kw}
 
 
+MODES = ("online", "server", "server2019", "server2016")
+
+# Built-in fields every list has (valid in $select without being in /fields)
+BUILTIN_FIELDS = {"Id", "ID", "Title", "Created", "Modified", "Author", "Editor", "HasUniqueRoleAssignments",
+                  "FileLeafRef", "FileRef", "FileDirRef", "FSObjType", "File", "Attachments", "ContentType"}
+
+
+def _hidden(*names: str) -> list[dict]:
+    return [{"Id": f"x-{n}", "InternalName": n, "Title": n, "TypeAsString": "Note", "Hidden": True,
+             "ReadOnlyField": False, "FromBaseType": False, "Required": False} for n in names]
+
+
 def build(mode: str, site_url: str) -> dict:
     """Everything the mock serves, for one platform."""
-    server = mode == "server"
+    if mode not in MODES:
+        raise ValueError(f"MOCK_MODE must be one of {MODES}")
+    server = mode.startswith("server")
+    modern = mode != "server2016"  # modern pages arrived in SharePoint 2019
     u = urlparse(site_url)
     host, path = u.hostname or "localhost", u.path.rstrip("/")
     origin = f"{u.scheme}://{u.netloc}"
@@ -104,10 +121,15 @@ def build(mode: str, site_url: str) -> dict:
          "HasUniqueRoleAssignments": False, "EntityTypeName": "Policies", "EnableModeration": False,
          "EnableVersioning": True, "EnableAttachments": False, "ContentTypesEnabled": False, "IsSystemList": False,
          "IsCatalog": False, "RootFolder": {"ServerRelativeUrl": f"{path}/Policies"}},
-        {"Id": SITE_PAGES, "Title": "Site Pages", "Description": "", "BaseTemplate": 119, "ItemCount": 3,
+        {"Id": SITE_PAGES, "Title": "Site Pages", "Description": "", "BaseTemplate": 119, "ItemCount": 4,
          "Hidden": False, "HasUniqueRoleAssignments": False, "EntityTypeName": "SitePages", "EnableModeration": False,
          "EnableVersioning": True, "EnableAttachments": False, "ContentTypesEnabled": True, "IsSystemList": False,
          "IsCatalog": False, "RootFolder": {"ServerRelativeUrl": f"{path}/SitePages"}},
+        # Publishing pages library (classic publishing sites)
+        {"Id": PUBLISHING_PAGES, "Title": "Pages", "Description": "", "BaseTemplate": 850, "ItemCount": 1,
+         "Hidden": False, "HasUniqueRoleAssignments": False, "EntityTypeName": "Pages", "EnableModeration": True,
+         "EnableVersioning": True, "EnableAttachments": False, "ContentTypesEnabled": True, "IsSystemList": False,
+         "IsCatalog": False, "RootFolder": {"ServerRelativeUrl": f"{path}/Pages"}},
     ]
 
     fields = {
@@ -138,6 +160,9 @@ def build(mode: str, site_url: str) -> dict:
             # Hidden and system fields the client must skip
             {**_field("hx", "_dlc_DocId", "Document ID", "Text"), "Hidden": True},
         ],
+        SITE_PAGES: _hidden("WikiField", *(("CanvasContent1", "PromotedState", "FirstPublishedDate", "Description",
+                                            "BannerImageUrl", "ClientSideApplicationId") if modern else ())),
+        PUBLISHING_PAGES: _hidden("PublishingPageContent", "PublishingPageLayout", "PublishingRollupImage", "Comments"),
     }
 
     views = {
@@ -270,19 +295,48 @@ def build(mode: str, site_url: str) -> dict:
         controls.append({"controlType": 0, "pageSettingsSlice": {"isDefaultDescription": True}})
         return json.dumps(controls)
 
-    site_page_items = [
-        {"Id": p["itemId"], "Title": p["title"], "FileLeafRef": p["name"], "FileRef": f"{path}/SitePages/{p['name']}",
-         "Description": p["description"], "PromotedState": p["promoted"], "CanvasContent1": canvas_content(p),
-         "FirstPublishedDate": p.get("firstPublished"), "HasUniqueRoleAssignments": False,
-         "ClientSideApplicationId": "b6917cb1-93a0-4b97-a84d-7cf49975d4ec", **audit(
-             p["Created"], p["Modified"], p["Author"]["EMail"].split("@")[0], p["Editor"]["EMail"].split("@")[0])}
-        for p in pages
+    def wiki_html(p: dict) -> str:
+        """The page as a 2016 wiki page: its text, and images as <img>; other web parts are dropped."""
+        parts = []
+        for sec in p["sections"]:
+            for col in sec["columns"]:
+                for c in col:
+                    if "text" in c:
+                        parts.append(c["text"])
+                    for src in c.get("images", {}).values():
+                        parts.append(f'<img src="{src}" alt="{c["properties"].get("altText", "")}" />')
+        return f'<div class="ExternalClass">{"".join(parts)}</div>'
+
+    def page_item(p: dict) -> dict:
+        it = {"Id": p["itemId"], "Title": p["title"], "FileLeafRef": p["name"],
+              "FileRef": f"{path}/SitePages/{p['name']}", "HasUniqueRoleAssignments": False, "WikiField": None,
+              **audit(p["Created"], p["Modified"], p["Author"]["EMail"].split("@")[0],
+                      p["Editor"]["EMail"].split("@")[0])}
+        if modern:
+            it.update({"Description": p["description"], "PromotedState": p["promoted"],
+                       "CanvasContent1": canvas_content(p), "FirstPublishedDate": p.get("firstPublished"),
+                       "ClientSideApplicationId": "b6917cb1-93a0-4b97-a84d-7cf49975d4ec"})
+        else:
+            it["WikiField"] = wiki_html(p)
+        return it
+
+    site_page_items = [page_item(p) for p in pages]
+    # A classic wiki page, on every platform
+    old_wiki = {"Id": 4, "Title": "Old wiki", "FileLeafRef": "Old-Wiki.aspx", "FileRef": f"{path}/SitePages/Old-Wiki.aspx",
+                "HasUniqueRoleAssignments": False,
+                "WikiField": ('<div class="ExternalClass"><h2>Team wiki</h2><p>Start at the '
+                              f'<a href="{path}/SitePages/Home.aspx">home page</a>.</p>'
+                              f'<img src="{path}/SiteAssets/team.png" alt="Team photo" /></div>'),
+                **audit("2015-01-01T08:00:00Z", "2016-01-01T08:00:00Z", "jane", "jane")}
+    if modern:
+        old_wiki.update({"CanvasContent1": None, "PromotedState": 0, "Description": None})
+    site_page_items.append(old_wiki)
+    publishing_items = [
+        {"Id": 1, "Title": "Press release", "FileLeafRef": "Press-Release.aspx", "FileRef": f"{path}/Pages/Press-Release.aspx",
+         "HasUniqueRoleAssignments": False, "PublishingPageLayout": f"{path}/_catalogs/masterpage/ArticleLeft.aspx",
+         "PublishingPageContent": "<h2>Widget 2.0 launches</h2><p>Available in <b>EMEA</b> from today.</p>",
+         **audit("2016-03-01T08:00:00Z", "2016-03-02T08:00:00Z", "bob", "bob")},
     ]
-    # A classic wiki page: no CanvasContent1, so it isn't a modern page
-    site_page_items.append({"Id": 4, "Title": "Old wiki", "FileLeafRef": "Old-Wiki.aspx",
-                            "FileRef": f"{path}/SitePages/Old-Wiki.aspx", "Description": None, "PromotedState": 0,
-                            "CanvasContent1": None, "HasUniqueRoleAssignments": False,
-                            **audit("2015-01-01T08:00:00Z", "2015-01-01T08:00:00Z", "old", "old")})
 
     navigation = {
         "QuickLaunch": [
@@ -314,9 +368,10 @@ def build(mode: str, site_url: str) -> dict:
                             {"Id": 1073741830, "Name": "Edit", "RoleTypeKind": 6, "Hidden": False},
                             {"Id": 1073741826, "Name": "Read", "RoleTypeKind": 2, "Hidden": False},
                             {"Id": 1073741825, "Name": "Limited Access", "RoleTypeKind": 1, "Hidden": True}],
-        "roleAssignments": role_assignments, "lists": lists, "fields": fields, "views": views, "items": items,
-        "attachments": attachments, "files": files, "pages": [graph_page(p) for p in pages],
-        "sitePageItems": site_page_items, "navigation": navigation,
+        "roleAssignments": role_assignments, "lists": lists, "fields": fields, "views": views,
+        "items": {**items, SITE_PAGES: site_page_items, PUBLISHING_PAGES: publishing_items},
+        "attachments": attachments, "files": files, "pages": [graph_page(p) for p in pages] if modern else [],
+        "navigation": navigation, "modern": modern, "builtinFields": sorted(BUILTIN_FIELDS),
         "termSet": {"id": TERMSET, "localizedNames": [{"name": "Departments", "languageTag": "en-US"}], "terms": terms},
         "profiles": profiles,
         "entraGroups": {SALES_GROUP: ["bob"]},

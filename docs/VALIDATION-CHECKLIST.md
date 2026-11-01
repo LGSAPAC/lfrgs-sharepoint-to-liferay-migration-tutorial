@@ -65,7 +65,7 @@ the chapter were changed to match what the live instance accepts.
 | L24 | Child categories via `POST /taxonomy-categories/{parentId}/taxonomy-categories`; lookup via `…/taxonomy-vocabularies/{id}/taxonomy-categories/by-external-reference-code/{erc}` | `liferay.py: create_category, category` | ✅ Hierarchy kept (EMEA under Sales) |
 | L25 | Object entries accept `taxonomyCategoryIds` (with `enableCategorization: true`), including global-site categories on depot-scoped CMS entries | `load.py: phase_entries` | ✅ Global-site categories on a depot entry |
 | L26 | `POST /o/data-engine/v2.0/sites/{id}/data-definitions/by-content-type/document-library` creates a usable **Document Type**; field types `select`, `date`, `date_time`, `checkbox`, `numeric`, `rich_text` | `liferay.py: create_document_type` (falls back to description) | ⚠️ Also needs a file entry type (JSON-WS `add-file-entry-type`), `fieldReference` and `dataType` per field; `select` doesn't take values, so Choice → `text`. Fixed |
-| L27 | Document upload accepts `documentType: {name, contentFields: [{name, contentFieldValue: {data}}]}`, `externalReferenceCode` and `taxonomyCategoryIds` in the `document` part | `load.py: phase_documents` (retries without the type) | ⚠️ Works once the type exists (L26); dates need full ISO-8601. Fixed |
+| L27 | Document upload accepts `documentType: {name, contentFields: [{name, contentFieldValue: {data}}]}`, `externalReferenceCode` and `taxonomyCategoryIds` in the `document` part | `load.py: phase_documents` (retries without the type) | ⚠️ Works once the type exists (L26). Dates need full ISO-8601; date-times must be `yyyy-MM-dd HH:mm`, or they're stored but not indexed (*Unparseable date*). Fixed |
 | L28 | `PUT /o/headless-delivery/v1.0/documents/{id}/permissions` and `/document-folders/{id}/permissions` | `load.py: phase_permissions` | ✅ |
 | L29 | `?doAsUserId=<userId>` on headless create calls makes that user the `creator` (migration user has Impersonate) | `load.py: _as_author` | ❌ `doAsUserId` ignored with Basic auth, even for an Administrator. Docs updated |
 | L30 | Blog posting accepts `datePublished` in the past, `externalReferenceCode` and `friendlyUrlPath` | `load.py: phase_news` | ✅ |
@@ -73,9 +73,9 @@ the chapter were changed to match what the live instance accepts.
 | L32 | SP REST taxonomy column values come back as `{Label, TermGuid, WssId}` (single) / arrays (multi) with `odata=nometadata` | `transform.py: term_values` | ☐ |
 | L33 | Streaming download of files over 100 MB via `GetFileByServerRelativeUrl(…)/$value` | `sharepoint.py: download_to` | ☐ |
 
-## SharePoint Server Subscription Edition (source)
+## SharePoint Server: Subscription Edition, 2019, 2016 (source)
 
-Developed against the [mock](14-mock-sharepoint.md) only. Confirm on a real farm.
+Developed against the [mock](14-mock-sharepoint.md) only (SE, 2019 and 2016 modes). Confirm on a real farm.
 
 | # | Check | Code | Status |
 |---|---|---|---|
@@ -86,6 +86,9 @@ Developed against the [mock](14-mock-sharepoint.md) only. Confirm on a real farm
 | S-SE5 | `/_api/v2.1/termStore/sets/{id}` (+ `/children`, `/terms/{id}/children`) exists on SE | `sharepoint.py: term_set` | ☐ (mock ✅) |
 | S-SE6 | AD groups appear as `c:0+.w\|<SID>`; "All Authenticated Users" as `c:0!.s\|windows` | `sharepoint.py: parse_login` | ☐ (mock ✅) |
 | S-SE7 | `GetFileByServerRelativeUrl(…)/$value` streams large files over NTLM | `sharepoint.py: download_to` | ☐ (mock ✅) |
+| S-SE8 | 2019/2016: `ProcessQuery` with `TaxonomySession` (`{981cbc68-…}`) → `GetDefaultSiteCollectionTermStore` → `GetTermSet` → `GetAllTerms` returns `PathOfTerm` | `sharepoint.py: _csom_term_set` | ☐ (mock ✅) |
+| S-SE9 | 2016: Site Pages has no `CanvasContent1`; wiki HTML is in `WikiField` | `sharepoint.py: classic_pages` | ☐ (mock ✅) |
+| S-SE10 | Publishing pages: Pages library is `BaseTemplate 850`, HTML in `PublishingPageContent` (also on Online classic publishing sites) | `sharepoint.py: classic_pages` | ☐ (mock ✅) |
 
 ## Pages
 
@@ -125,4 +128,4 @@ Then run chapters 3–9 and record the results here:
 | prompts/03-validate.md | ☐ | |
 
 The same scenario also runs end to end from the [mock SharePoint](14-mock-sharepoint.md), Online and
-Server modes, into Liferay 2026.q3.9: 0 errors, `verify` 9/9, re-run a no-op.
+Server modes, into Liferay 2026.q3.9: 0 errors, `verify` all checks, re-run a no-op; 2019 and 2016 modes too.

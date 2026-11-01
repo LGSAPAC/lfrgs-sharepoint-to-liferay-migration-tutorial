@@ -12,12 +12,19 @@ extract, plan and load work unchanged:
   modern pages    Site Pages items, CanvasContent1 converted to canvasLayout
   users           site users + PeopleManager (Active Directory, not Entra ID)
   AD groups       not expandable over REST: kept as empty user groups (warning)
-  term store      /_api/v2.1/termStore (falls back to labels seen on items)
+  term store      /_api/v2.1/termStore (SE), else the client object model
+                  (/_vti_bin/client.svc/ProcessQuery) on 2019 and 2016
 Sign-in is NTLM (DOMAIN\\user + password).
+
+Classic pages (wiki pages in Site Pages, publishing pages in a Pages library) are
+read on both platforms and returned as one-column pages with their HTML.
+Fields are only $selected when the list has them, since SharePoint rejects a
+$select of a missing column (e.g. CanvasContent1 on 2016).
 """
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any, Iterator
 from urllib.parse import quote
@@ -33,6 +40,10 @@ SUPPORTED_FIELD_TYPES = {
     "MultiChoice", "Lookup", "LookupMulti", "User", "UserMulti", "URL",
     "TaxonomyFieldType", "TaxonomyFieldTypeMulti",
 }
+
+# Classic page libraries and the field holding their HTML
+CLASSIC_PAGE_SOURCES = {119: "WikiField", 850: "PublishingPageContent"}  # Site Pages (wiki), Pages (publishing)
+TAXONOMY_SESSION_TYPE = "{981cbc68-9edc-4f8d-872f-71146fcbb84f}"  # SP.Taxonomy.TaxonomySession (client OM)
 
 # Libraries that SharePoint creates for its own purposes
 SYSTEM_LIBRARIES = {"Site Assets", "Style Library", "Form Templates", "Preservation Hold Library",
@@ -61,6 +72,8 @@ class SharePointClient:
             auth = HttpNtlmAuth(settings.username, settings.password)
         self.http = httpx.Client(timeout=60, auth=auth)
         self._site_id: str | None = None
+        self._fields_cache: dict[str, set[str]] = {}
+        self._classic: dict[str, dict] | None = None
 
     def _auth(self, token: str | None) -> dict:
         # SharePoint Server signs in with NTLM on the client; Online sends a bearer token
@@ -77,6 +90,18 @@ class SharePointClient:
             r.raise_for_status()
             return r.content if raw else r.json()
         r.raise_for_status()
+
+    def _post(self, url: str, body: bytes, headers: dict) -> httpx.Response:
+        """POST used only for read requests that need it (form digest, client object model queries)."""
+        for attempt in range(6):
+            r = self.http.post(url, content=body, headers={**self._auth(self._sp_token()), **headers})
+            if r.status_code in (429, 503):
+                time.sleep(int(r.headers.get("Retry-After", 2 ** attempt)))
+                continue
+            r.raise_for_status()
+            return r
+        r.raise_for_status()
+        return r
 
     def graph(self, path: str) -> Any:
         if self.settings.is_server:
@@ -171,36 +196,95 @@ class SharePointClient:
 
     # ----------------------------------------------------------------- pages
     def list_pages(self) -> list[dict]:
+        """Modern pages, then classic (wiki and publishing) pages."""
         if self.settings.is_server:
-            return [_server_page(i, self.settings.site_url) for i in self._server_page_items()]
-        return list(self.graph_paged(
-            f"/sites/{self.site_id}/pages/microsoft.graph.sitePage"
-            "?$select=id,name,title,webUrl,description,pageLayout,promotionKind,createdDateTime,lastModifiedDateTime,publishingState"
-        ))
+            modern = [_server_page(i, self.settings.site_url) for i in self._server_page_items()]
+        else:
+            modern = list(self.graph_paged(
+                f"/sites/{self.site_id}/pages/microsoft.graph.sitePage"
+                "?$select=id,name,title,webUrl,description,pageLayout,promotionKind,createdDateTime,lastModifiedDateTime,publishingState"
+            ))
+        classic = [{k: v for k, v in p.items() if k != "canvasLayout"} for p in self.classic_pages().values()]
+        return modern + classic
+
+    def _site_pages_list_id(self) -> str | None:
+        return next((lst["Id"] for lst in self.list_lists() if lst["BaseTemplate"] == 119), None)
+
+    def _field_names(self, list_id: str) -> set[str]:
+        """Internal names of every field on a list, hidden ones included (to build a valid $select)."""
+        if list_id not in self._fields_cache:
+            fields = self.rest(f"/web/lists(guid'{list_id}')/fields?$select=InternalName").get("value", [])
+            self._fields_cache[list_id] = {f["InternalName"] for f in fields}
+        return self._fields_cache[list_id]
+
+    def _select(self, list_id: str, wanted: list[str]) -> str:
+        have = self._field_names(list_id) | {"Id", "Title", "Created", "Modified", "Author", "Editor",
+                                              "HasUniqueRoleAssignments", "FileLeafRef", "FileRef"}
+        return ",".join(w for w in wanted if w.split("/")[0] in have)
 
     def _server_page_items(self, item_id: str | None = None) -> list[dict]:
-        select = ("Id,Title,FileLeafRef,FileRef,Description,PromotedState,CanvasContent1,Created,Modified,"
-                  "FirstPublishedDate,ClientSideApplicationId")
+        list_id = self._site_pages_list_id()
+        if not list_id or "CanvasContent1" not in self._field_names(list_id):
+            return []  # SharePoint 2016 and older: no modern pages
+        select = self._select(list_id, ["Id", "Title", "FileLeafRef", "FileRef", "Description", "PromotedState",
+                                        "CanvasContent1", "Created", "Modified", "FirstPublishedDate"])
         if item_id:
-            return [self.rest(f"/web/lists/getbytitle('Site Pages')/items({int(item_id)})?$select={select}")]
-        items = self.rest_paged(f"/web/lists/getbytitle('Site Pages')/items?$select={select}&$top=500")
+            return [self.rest(f"/web/lists(guid'{list_id}')/items({int(item_id)})?$select={select}")]
+        items = self.rest_paged(f"/web/lists(guid'{list_id}')/items?$select={select}&$top=500")
         # Modern pages only: classic wiki/web part pages have no canvas
-        return [i for i in items if i.get("CanvasContent1") is not None]
+        return [i for i in items if i.get("CanvasContent1")]
+
+    def classic_pages(self) -> dict[str, dict]:
+        """Wiki pages (Site Pages, WikiField) and publishing pages (Pages library, PublishingPageContent),
+        as Graph-shaped pages with one text web part holding the page HTML. Cached."""
+        if self._classic is not None:
+            return self._classic
+        self._classic = {}
+        host = "/".join(self.settings.site_url.split("/", 3)[:3])
+        for lst in self.list_lists():
+            html_field = CLASSIC_PAGE_SOURCES.get(lst["BaseTemplate"])
+            if not html_field or html_field not in self._field_names(lst["Id"]):
+                continue
+            select = self._select(lst["Id"], ["Id", "Title", "FileLeafRef", "FileRef", html_field, "CanvasContent1",
+                                              "Created", "Modified"])
+            for item in self.rest_paged(f"/web/lists(guid'{lst['Id']}')/items?$select={select}&$top=500"):
+                body = item.get(html_field)
+                if item.get("CanvasContent1") or not body or not (item.get("FileLeafRef") or "").endswith(".aspx"):
+                    continue  # modern page, empty page, or not a page
+                page_id = f"classic-{lst['Id']}-{item['Id']}"
+                self._classic[page_id] = {
+                    "id": page_id, "name": item["FileLeafRef"],
+                    "title": item.get("Title") or item["FileLeafRef"].rsplit(".", 1)[0].replace("-", " "),
+                    "description": "", "webUrl": f"{host}{item.get('FileRef', '')}", "promotionKind": "page",
+                    "pageLayout": "classic", "createdDateTime": item.get("Created"),
+                    "lastModifiedDateTime": item.get("Modified"), "_listId": lst["Id"],
+                    "canvasLayout": {"horizontalSections": [{"layout": "oneColumn", "columns": [
+                        {"width": 12, "webparts": [{"@odata.type": "#microsoft.graph.textWebPart",
+                                                    "innerHtml": body}]}]}]},
+                }
+        return self._classic
 
     def get_page(self, page_id: str) -> dict:
+        if page_id.startswith("classic-"):
+            return dict(self.classic_pages()[page_id])
         if self.settings.is_server:
             return _server_page(self._server_page_items(page_id)[0], self.settings.site_url, with_canvas=True)
         return self.graph(
             f"/sites/{self.site_id}/pages/{page_id}/microsoft.graph.sitePage?$expand=canvasLayout"
         )
 
-    def page_list_item(self, page_name: str) -> dict:
-        """The Site Pages list item behind a page (for unique permissions)."""
+    def page_list_item(self, page_name: str, list_id: str | None = None) -> dict:
+        """The list item behind a page (Created/Modified/Author and unique permissions)."""
+        list_id = list_id or self._site_pages_list_id()
+        if not list_id:
+            return {}
+        select = self._select(list_id, ["Id", "FileLeafRef", "HasUniqueRoleAssignments", "Created", "Modified",
+                                        "FirstPublishedDate", "Author/EMail", "Author/Title",
+                                        "Editor/EMail", "Editor/Title"])
+        name = page_name.replace("'", "''")
         items = self.rest(
-            "/web/lists/getbytitle('Site Pages')/items"
-            "?$select=Id,FileLeafRef,HasUniqueRoleAssignments,Created,Modified,FirstPublishedDate,"
-            "Author/EMail,Author/Title,Editor/EMail,Editor/Title&$expand=Author,Editor"
-            f"&$filter=FileLeafRef eq '{page_name}'"
+            f"/web/lists(guid'{list_id}')/items?$select={select}&$expand=Author,Editor"
+            f"&$filter=FileLeafRef eq '{name}'"
         ).get("value", [])
         return items[0] if items else {}
 
@@ -273,6 +357,12 @@ class SharePointClient:
         if self.settings.is_server:
             base = f"{self.web_url}/_api/v2.1/termStore/sets/{term_set_id}"
             get, paged = self.rest, self.rest_paged
+            try:
+                get(base)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code not in (400, 404):
+                    raise
+                return self._csom_term_set(term_set_id)  # 2019 / 2016: no v2.1 term store REST
         else:
             base = f"/sites/{self.site_id}/termStore/sets/{term_set_id}"
             get, paged = self.graph, self.graph_paged
@@ -286,6 +376,33 @@ class SharePointClient:
             return out
 
         return {"id": ts["id"], "localizedNames": ts.get("localizedNames", []), "terms": children(base)}
+
+    def _csom_term_set(self, term_set_id: str) -> dict:
+        """Term set through the client object model (SharePoint 2013-2019): TaxonomySession ->
+        default site collection term store -> GetTermSet -> GetAllTerms. The hierarchy comes from
+        each term's PathOfTerm ("Sales;EMEA"). Read-only, but CSOM needs a POST and a form digest."""
+        digest = self._post(f"{self.web_url}/_api/contextinfo", b"",
+                            {"Accept": "application/json;odata=nometadata"}).json()["FormDigestValue"]
+        xml = (
+            '<Request xmlns="http://schemas.microsoft.com/sharepoint/clientquery/2009" SchemaVersion="15.0.0.0" '
+            'LibraryVersion="16.0.0.0" ApplicationName="sp2lr"><Actions>'
+            '<Query Id="11" ObjectPathId="5"><Query SelectAllProperties="false"><Properties>'
+            '<Property Name="Id" ScalarProperty="true"/><Property Name="Name" ScalarProperty="true"/>'
+            '</Properties></Query></Query>'
+            '<Query Id="12" ObjectPathId="7"><Query SelectAllProperties="false"><Properties/></Query>'
+            '<ChildItemQuery SelectAllProperties="false"><Properties>'
+            '<Property Name="Id" ScalarProperty="true"/><Property Name="Name" ScalarProperty="true"/>'
+            '<Property Name="PathOfTerm" ScalarProperty="true"/></Properties></ChildItemQuery></Query>'
+            '</Actions><ObjectPaths>'
+            f'<StaticMethod Id="1" Name="GetTaxonomySession" TypeId="{TAXONOMY_SESSION_TYPE}"/>'
+            '<Method Id="3" ParentId="1" Name="GetDefaultSiteCollectionTermStore"/>'
+            f'<Method Id="5" ParentId="3" Name="GetTermSet"><Parameters><Parameter Type="Guid">{{{term_set_id}}}'
+            '</Parameter></Parameters></Method>'
+            '<Method Id="7" ParentId="5" Name="GetAllTerms"/>'
+            '</ObjectPaths></Request>')
+        r = self._post(f"{self.web_url}/_vti_bin/client.svc/ProcessQuery", xml.encode(),
+                       {"Content-Type": "text/xml", "X-RequestDigest": digest})
+        return parse_csom_term_set(r.json(), term_set_id)
 
     def item_attachments(self, list_id: str, item_id: int) -> list[dict]:
         return self.rest(f"/web/lists(guid'{list_id}')/items({item_id})/AttachmentFiles").get("value", [])
@@ -436,3 +553,34 @@ def _server_page(item: dict, site_url: str, with_canvas: bool = False) -> dict:
     if with_canvas:
         page["canvasLayout"] = canvas_to_layout(item.get("CanvasContent1") or "")
     return page
+
+
+def _csom_guid(value: str) -> str:
+    """CSOM serialises GUIDs as "/Guid(…)/"."""
+    m = re.search(r"Guid\(([^)]+)\)", value or "")
+    return (m.group(1) if m else value or "").lower()
+
+
+def parse_csom_term_set(response: list, term_set_id: str) -> dict:
+    """ProcessQuery response -> the Graph term set shape {id, localizedNames, terms: [{id, labels, children}]}.
+
+    The response is [header, actionId, result, actionId, result, …]; the header's ErrorInfo is set on failure."""
+    header = response[0] if response else {}
+    if header.get("ErrorInfo"):
+        raise RuntimeError(f"Client object model error: {header['ErrorInfo'].get('ErrorMessage')}")
+    results = dict(zip(response[1::2], response[2::2]))
+    ts = results.get(11) or {}
+    terms = (results.get(12) or {}).get("_Child_Items_", [])
+    nodes: dict[str, dict] = {}
+    roots: list[dict] = []
+    # Parents come before children once sorted by depth; PathOfTerm uses ";" between levels
+    for t in sorted(terms, key=lambda x: (x.get("PathOfTerm") or "").count(";")):
+        path = t.get("PathOfTerm") or t.get("Name") or ""
+        node = {"id": _csom_guid(t.get("Id", "")), "labels": [{"name": t.get("Name"), "isDefault": True}],
+                "children": []}
+        nodes[path] = node
+        parent = nodes.get(path.rsplit(";", 1)[0]) if ";" in path else None
+        (parent["children"] if parent else roots).append(node)
+    return {"id": _csom_guid(ts.get("Id", "")) or term_set_id.lower(),
+            "localizedNames": [{"name": ts.get("Name"), "languageTag": "en-US"}] if ts.get("Name") else [],
+            "terms": roots}

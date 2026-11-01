@@ -87,9 +87,12 @@ with *"Value should not be set for transient field"*).
 | Text, URL, Person | `text` |
 | Multiple lines (plain / rich) | `text` (multiline) / `rich_text` |
 | Number, Currency | `numeric` |
-| Date / Date and time | `date` / `date_time` (values sent as full ISO-8601, e.g. `2027-01-01T00:00:00Z`) |
+| Date / Date and time | `date` / `date_time`. Dates are sent as ISO-8601 (`2027-01-01T00:00:00Z`); date-times as `2023-05-01 08:00` (UTC), the only form the search indexer parses |
 | Yes/No | `checkbox` |
 | Choice / Multi-choice | `text`, holding the choice as SharePoint shows it (`HR`; multi-choice comma-separated) |
+
+> A `date_time` value in ISO-8601 is stored, but the search indexer logs *"Unparseable date"* and
+> skips it, so the field can't be searched or sorted. `yyyy-MM-dd HH:mm` is stored and indexed.
 
 > Choice columns become text fields because, in 2026.Q3, a `select` field on a document type doesn't
 > take a value through the headless upload: it's stored empty whatever is sent. The value is kept

@@ -4,9 +4,14 @@
                      bearer token "sp2lr-mock-token" (sp2lr: SP_AUTH_MODE=none)
   MOCK_MODE=server   SharePoint Server Subscription Edition: SharePoint REST only, NTLM sign-in
                      checked for real against MOCK_NTLM_USER (DOMAIN\\user) / MOCK_NTLM_PASSWORD
+  MOCK_MODE=server2019 / server2016
+                     Older farms: no /_api/v2.1 term store (client object model only), and on
+                     2016 no modern page fields at all, so pages are wiki pages
 
-Read-only, like the real client: every route is a GET. Responses follow the shapes in
-scenario.py. Lists page at MOCK_PAGE_SIZE items (default 1) so OData paging is exercised.
+Read-only, like the real client: GETs, plus the two POSTs the client object model needs
+(/_api/contextinfo for a form digest, /_vti_bin/client.svc/ProcessQuery). A $select naming a
+column the list doesn't have answers 400, as SharePoint does. Lists page at MOCK_PAGE_SIZE items
+(default 1) so OData paging is exercised.
 """
 
 from __future__ import annotations
@@ -14,7 +19,9 @@ from __future__ import annotations
 import base64
 import os
 import re
+import secrets
 import tempfile
+import xml.etree.ElementTree as ET
 from urllib.parse import quote, unquote
 
 from starlette.applications import Starlette
@@ -42,11 +49,25 @@ def create_app(mode: str | None = None, site_url: str | None = None) -> Starlett
     page_size = int(os.environ.get("MOCK_PAGE_SIZE", "1"))
     data = scenario.build(mode, site_url)
     path = data["path"]
-    server = mode == "server"
+    server = mode.startswith("server")
     ntlm = _NtlmGate() if server else None
+    digests: set[str] = set()
+
+    def bad_select(request: Request, list_id: str) -> JSONResponse | None:
+        """SharePoint answers 400 when $select names a column the list doesn't have."""
+        have = set(data["builtinFields"]) | {f["InternalName"] for f in data["fields"].get(list_id, [])}
+        for col in filter(None, request.query_params.get("$select", "").split(",")):
+            if col.split("/")[0] not in have:
+                return JSONResponse({"odata.error": {"code": "-2147024809, System.ArgumentException", "message": {
+                    "lang": "en-US", "value": f"Column '{col.split('/')[0]}' does not exist. It may have been "
+                                              "deleted by another user."}}}, status_code=400)
+        return None
 
     def paged(request: Request, items: list[dict]) -> JSONResponse:
         """OData paging the way SharePoint REST does it: $skiptoken=Paged=TRUE&p_ID=<last id>."""
+        f = re.search(r"FileLeafRef eq '((?:[^']|'')*)'", request.query_params.get("$filter", ""))
+        if f:
+            items = [i for i in items if i.get("FileLeafRef") == f.group(1).replace("''", "'")]
         top = min(int(request.query_params.get("$top", page_size)), page_size)
         token = request.query_params.get("$skiptoken", "")
         after = int(re.search(r"p_ID=(\d+)", token).group(1)) if "p_ID=" in token else 0
@@ -104,13 +125,12 @@ def create_app(mode: str | None = None, site_url: str | None = None) -> Starlett
         if m := re.fullmatch(r"/web/lists/getbytitle\('Site Pages'\)(/items(?:\((\d+)\))?)?", p):
             if not m.group(1):
                 return _odata({"Id": scenario.SITE_PAGES})
+            if bad := bad_select(request, scenario.SITE_PAGES):
+                return bad
+            items = data["items"][scenario.SITE_PAGES]
             if m.group(2):
-                it = next((i for i in data["sitePageItems"] if i["Id"] == int(m.group(2))), None)
+                it = next((i for i in items if i["Id"] == int(m.group(2))), None)
                 return _odata(it) if it else _not_found()
-            items = data["sitePageItems"]
-            f = re.search(r"FileLeafRef eq '([^']*)'", request.query_params.get("$filter", ""))
-            if f:
-                items = [i for i in items if i["FileLeafRef"] == f.group(1)]
             return paged(request, items)
         # Lists by GUID
         if m := re.fullmatch(r"/web/lists\(guid'([0-9a-fA-F-]+)'\)(/.*)?", p):
@@ -122,6 +142,8 @@ def create_app(mode: str | None = None, site_url: str | None = None) -> Starlett
                 return _odata({"value": data["fields"].get(lid, [])})
             if sub == "/views":
                 return _odata({"value": data["views"].get(lid, [])})
+            if re.fullmatch(r"/items(\(\d+\))?", sub) and (bad := bad_select(request, lid)):
+                return bad
             if sub == "/items":
                 return paged(request, data["items"].get(lid, []))
             if sub == "/roleassignments":
@@ -138,8 +160,8 @@ def create_app(mode: str | None = None, site_url: str | None = None) -> Starlett
         if m := re.fullmatch(r"/web/GetFileByServerRelativeUrl\('(.*)'\)/\$value", p):
             body = data["files"].get(unquote(m.group(1)).replace("''", "'"))
             return Response(body, media_type="application/octet-stream") if body is not None else _not_found("File Not Found.")
-        # Term store over REST (SharePoint Server); same resource shapes as Graph
-        if server and (m := re.fullmatch(r"/v2\.1/termStore/sets/([0-9a-fA-F-]+)(/.*)?", p)):
+        # Term store over REST: Subscription Edition only (same resource shapes as Graph)
+        if mode == "server" and (m := re.fullmatch(r"/v2\.1/termStore/sets/([0-9a-fA-F-]+)(/.*)?", p)):
             return termstore(m.group(1), m.group(2) or "")
         return _not_found(f"Unknown REST resource {p}")
 
@@ -166,6 +188,55 @@ def create_app(mode: str | None = None, site_url: str | None = None) -> Starlett
             t = find(ts["terms"])
             return _odata({"value": [strip(c) for c in t["children"]]}) if t else _not_found()
         return _not_found()
+
+    # ------------------------------------------------- client object model
+    def contextinfo() -> Response:
+        digest = "0x" + secrets.token_hex(32).upper() + ",01 Nov 2026 00:00:00 -0000"
+        digests.add(digest)
+        return _odata({"FormDigestValue": digest, "FormDigestTimeoutSeconds": 1800,
+                       "WebFullUrl": data["web"]["Url"], "LibraryVersion": "16.0.0.0"})
+
+    async def process_query(request: Request) -> Response:
+        """Enough of ProcessQuery for the term store read: TaxonomySession -> GetTermSet -> GetAllTerms."""
+        if request.headers.get("x-requestdigest") not in digests:
+            return JSONResponse([{"SchemaVersion": "15.0.0.0", "ErrorInfo": {
+                "ErrorMessage": "The security validation for this page is invalid.", "ErrorCode": -2130575252}}])
+        ns = {"q": "http://schemas.microsoft.com/sharepoint/clientquery/2009"}
+        root = ET.fromstring(await request.body())
+        paths = {el.get("Id"): el for el in root.find("q:ObjectPaths", ns)}
+        header = {"SchemaVersion": "15.0.0.0", "LibraryVersion": "16.0.0.0", "ErrorInfo": None,
+                  "TraceCorrelationId": secrets.token_hex(8)}
+
+        def method(el):
+            return el.get("Name") if el is not None else None
+
+        ts = data["termSet"]
+        get_set = next((el for el in paths.values() if method(el) == "GetTermSet"), None)
+        if get_set is None or not any(method(el) == "GetTaxonomySession" and el.get("TypeId") ==
+                                      "{981cbc68-9edc-4f8d-872f-71146fcbb84f}" for el in paths.values()):
+            return JSONResponse([{**header, "ErrorInfo": {"ErrorMessage": "Unsupported query", "ErrorCode": -1}}])
+        wanted = get_set.find("q:Parameters/q:Parameter", ns).text.strip("{}").lower()
+        if wanted != ts["id"].lower():
+            return JSONResponse([{**header, "ErrorInfo": {"ErrorMessage": "Specified argument was out of the range "
+                                                                          "of valid values.", "ErrorCode": -2146233086}}])
+
+        def flat(terms, prefix=""):
+            for t in terms:
+                name = t["labels"][0]["name"]
+                pth = f"{prefix};{name}" if prefix else name
+                yield {"_ObjectType_": "SP.Taxonomy.Term", "Id": f"/Guid({t['id']})/", "Name": name, "PathOfTerm": pth}
+                yield from flat(t["children"], pth)
+
+        out = [header]
+        for q in root.find("q:Actions", ns).findall("q:Query", ns):
+            target = paths.get(q.get("ObjectPathId"))
+            if method(target) == "GetTermSet":
+                out += [int(q.get("Id")), {"_ObjectType_": "SP.Taxonomy.TermSet", "Id": f"/Guid({ts['id']})/",
+                                           "Name": ts["localizedNames"][0]["name"]}]
+            elif method(target) == "GetAllTerms":
+                out += [int(q.get("Id")), {"_ObjectType_": "SP.Taxonomy.TermCollection",
+                                           "_Child_Items_": list(flat(ts["terms"]))}]
+        return JSONResponse(out)
 
     # --------------------------------------------------------------- Graph
     def graph(request: Request, p: str) -> Response:
@@ -205,6 +276,12 @@ def create_app(mode: str | None = None, site_url: str | None = None) -> Starlett
             return JSONResponse({"error": "invalid_token"}, status_code=401,
                                 headers={"WWW-Authenticate": 'Bearer realm="mock"'})
         p = request.url.path
+        if request.method == "POST":
+            if server and p == f"{path}/_api/contextinfo":
+                return contextinfo()
+            if server and p == f"{path}/_vti_bin/client.svc/ProcessQuery":
+                return await process_query(request)
+            return JSONResponse({"error": "This mock is read-only"}, status_code=405)
         if p.startswith(f"{path}/_api/"):
             return rest(request, p[len(f"{path}/_api"):])
         if p.startswith("/v1.0/") and not server:
@@ -214,7 +291,7 @@ def create_app(mode: str | None = None, site_url: str | None = None) -> Starlett
     async def health(request: Request) -> Response:
         return JSONResponse({"mode": mode, "site": site_url})
 
-    return Starlette(routes=[Route("/_health", health), Route("/{rest:path}", handle)])
+    return Starlette(routes=[Route("/_health", health), Route("/{rest:path}", handle, methods=["GET", "POST"])])
 
 
 class _NtlmGate:

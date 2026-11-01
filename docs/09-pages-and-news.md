@@ -138,7 +138,25 @@ Links to news pages from other pages and navigation are rewritten to
 ignored in 2026.Q3, see [Chapter 4](04-mapping-and-plan.md#45-created-modified-and-author)); the
 original publish date is kept in `datePublished`.
 
-## 9.6 Visual check
+## 9.6 Classic pages
+
+Older sites (and every SharePoint 2016 site) also have **classic pages**, which have no modern canvas:
+
+| Classic page | Where it lives | Migrated as |
+|---|---|---|
+| Wiki page | *Site Pages* (`BaseTemplate 119`), HTML in `WikiField` | Content page with one paragraph fragment holding the HTML |
+| Publishing page | *Pages* library (`BaseTemplate 850`), HTML in `PublishingPageContent` | The same |
+
+They're read through SharePoint REST on every platform, so the same rules apply as for modern
+pages: images in the HTML are downloaded and re-hosted, links to other migrated pages are rewritten,
+and the Site Pages item gives Created/Modified/Author. Web parts placed in wiki or web part zones and
+the publishing page layout aren't kept, only the page HTML; review those pages in `plan.md`.
+
+A page is classic when its item has no `CanvasContent1`. The client builds each `$select` from the
+fields the list actually has, because SharePoint answers `400` to a `$select` naming a missing column
+(on 2016, `CanvasContent1` doesn't exist at all).
+
+## 9.7 Visual check
 
 > With the liferay MCP server, list the site pages of site "marketing" (fields: title, friendlyUrlPath).
 > For each, compare with the SharePoint page from `list_site_pages`. Then fetch the page definition of

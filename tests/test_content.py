@@ -25,7 +25,7 @@ def test_library_folders_documents_and_permissions(extract_dir):
     # Liferay doesn't inherit permissions: the file under the restricted folder carries the folder's scope
     assert handbook["permissionScope"] == "10" and readme["permissionScope"] is None
     assert handbook["metadata"] == {"audience": "HR", "expiry": "2027-01-01T00:00:00Z",
-                                    "spCreated": "2023-05-01T08:00:00Z", "spModified": "2024-06-01T08:00:00Z",
+                                    "spCreated": "2023-05-01 08:00", "spModified": "2024-06-01 08:00",
                                     "spCreatedBy": "jane@contoso.com", "spModifiedBy": "jane@contoso.com"}
     assert handbook["terms"] == ["t-emea"]
     assert lib["skippedFiles"] == ["/sites/marketing/Policies/video.mp4: larger than 250 MB"]

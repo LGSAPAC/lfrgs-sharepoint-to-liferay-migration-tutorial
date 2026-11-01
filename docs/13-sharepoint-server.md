@@ -1,21 +1,28 @@
 # 13. SharePoint Server (on-premises)
 
-The same tooling migrates from **SharePoint Server Subscription Edition** (SE). Set
+The same tooling migrates from **SharePoint Server**: Subscription Edition (SE), 2019 and 2016.
+SharePoint 2016 and 2019 left extended support on July 14, 2026, so they're the farms most likely
+to be moving now. Set
 `SP_PLATFORM=server` and every other chapter applies unchanged: the extract is written in the same
 shape as for SharePoint Online, so `plan`, `load` and `verify` don't know the difference.
 
-> **Status.** Developed and tested against the [mock SharePoint Server](14-mock-sharepoint.md), with real
-> NTLM sign-in. It has **not** run against a real SE farm yet: the response shapes come from
-> Microsoft's documentation. Items S-SE1 to S-SE7 in the [validation checklist](VALIDATION-CHECKLIST.md)
-> track what to confirm on a real farm.
+> **Status.** Developed and tested against the [mock SharePoint Server](14-mock-sharepoint.md) in
+> SE, 2019 and 2016 modes, with real NTLM sign-in. It has **not** run against a real farm yet: the
+> response shapes come from Microsoft's documentation. Items S-SE1 to S-SE10 in the
+> [validation checklist](VALIDATION-CHECKLIST.md) track what to confirm on a real farm.
 
 ## 13.1 Supported versions
 
-| Version | Supported | Why |
-|---|---|---|
-| Subscription Edition | ✅ target | Modern pages, REST API, current |
-| 2019 | Likely, untested | Modern pages exist; `/_api/v2.1/termStore` may not (the loader falls back, see 13.4) |
-| 2016 and older | ❌ | No modern pages: classic wiki and publishing pages have no `CanvasContent1` and are skipped |
+| Version | Modern pages | Term store read through | Classic pages |
+|---|---|---|---|
+| Subscription Edition | ✅ `CanvasContent1` | `/_api/v2.1/termStore` | ✅ |
+| 2019 | ✅ `CanvasContent1` | client object model (`ProcessQuery`) | ✅ |
+| 2016 | none in the product: all pages are wiki or publishing pages | client object model | ✅ |
+| 2013 and older | not tested | | |
+
+The client works out what the farm has instead of asking for a version: it builds every `$select`
+from the list's real fields, tries the v2.1 term store first and falls back to the client object
+model on `400`/`404`.
 
 ## 13.2 Configuration
 
@@ -42,12 +49,13 @@ returns them in the Graph shape:
 |---|---|---|
 | Site | Graph `/sites/{host}:{path}` | `/_api/site` + `/_api/web` (same `host,siteId,webId` id, so ERCs match) |
 | Modern pages | Graph `sitePage` + `canvasLayout` | Site Pages items, **`CanvasContent1`** converted to `canvasLayout` (`transform.canvas_to_layout`) |
+| Classic pages | REST (`WikiField`, `PublishingPageContent`) | the same REST ([Chapter 9](09-pages-and-news.md#96-classic-pages)) |
 | News posts | `promotionKind: newsPost` | `PromotedState = 2` |
 | Users | Entra ID profile | Site user + `SP.UserProfiles.PeopleManager` (Active Directory) |
 | User key (ERC) | `entra-<objectId>` | `ad-<domain>-<user>` |
 | Login names | `i:0#.f\|membership\|jane@contoso.com` | `i:0#.w\|contoso\jane` |
 | Security groups | Entra group, members expanded through Graph | AD group `c:0+.w\|<SID>`, **members not readable** (13.4) |
-| Managed metadata | Graph `termStore` | `/_api/v2.1/termStore` |
+| Managed metadata | Graph `termStore` | `/_api/v2.1/termStore` (SE), else the client object model (2019, 2016) |
 | Lists, libraries, items, views, fields, files, permissions | SharePoint REST | the same SharePoint REST |
 
 `CanvasContent1` stores each control with `position.zoneIndex` (section), `sectionIndex` (column),
@@ -66,9 +74,14 @@ Graph for the same page, which the tests check.
   can't apply. List leavers in `users.exclude` in `mapping.yaml`.
 * **User Profile Service.** Given name, surname, job title and department come from
   `PeopleManager`. Without the User Profile Service the client splits the display name instead.
-* **Term store.** If `/_api/v2.1/termStore` isn't available on your build, the loader builds the
-  vocabulary from the term labels seen on items, without the hierarchy, as it does on Online when a
-  term set can't be read.
+* **Term store.** On 2019 and 2016 the term set is read with the client object model:
+  `POST /_api/contextinfo` for a form digest, then `POST /_vti_bin/client.svc/ProcessQuery` with
+  `TaxonomySession → GetDefaultSiteCollectionTermStore → GetTermSet → GetAllTerms`. The hierarchy
+  comes from each term's `PathOfTerm` (`Sales;EMEA`). These are the only POSTs the tool sends to
+  SharePoint, and they only read. If that fails too, the loader builds the vocabulary from the term
+  labels seen on items, without the hierarchy.
+* **News on 2016.** There are no news posts before 2019; pages promoted as news on later versions
+  are ordinary pages there.
 * **Site search.** The MCP server's `search_sites` returns only the configured site.
 * **Everything else**, including the 2026.Q3 Liferay limits in the earlier chapters, is the same as for
   Online.

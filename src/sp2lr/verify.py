@@ -25,17 +25,21 @@ def verify(lr: LiferayClient, out: Path) -> dict:
                        if lr.get(f"/o/headless-admin-user/v1.0/user-groups/by-external-reference-code/{p['erc']}"))
     row("User groups", len(groups), found_groups)
 
+    site_id = (state.get("site") or {}).get("id")
+    space_id = (state.get("space") or {}).get("id")
+    row("Site", 1, 1 if site_id else 0, "" if site_id else "not created: see Errors during load")
+    row("CMS Space", 1, 1 if space_id else 0, "" if space_id else "not created: see Errors during load")
+
     for lp in plan["lists"]:
         d = state.get("definitions", {}).get(lp["listId"])
-        if not d:
-            row(f"List '{lp['listTitle']}'", lp["itemCount"], 0, "structure missing")
+        scope = space_id if lp["target"] == "cms" else site_id
+        if not d or not scope:
+            row(f"List '{lp['listTitle']}'", lp["itemCount"], 0, "structure missing" if not d else "no site/space")
             continue
-        scope = state["space"]["id"] if lp["target"] == "cms" else state["site"]["id"]
         data = lr.get(f"{d['restContextPath']}/scopes/{scope}?pageSize=1") or {}
         row(f"List '{lp['listTitle']}' -> {d['name']}", lp["itemCount"], data.get("totalCount", 0))
 
-    site_id = state["site"]["id"]
-    found_pages = sum(1 for p in plan["pages"] if lr.site_page(site_id, p["friendlyUrlPath"]))
+    found_pages = sum(1 for p in plan["pages"] if site_id and lr.site_page(site_id, p["friendlyUrlPath"]))
     row("Pages", len(plan["pages"]), found_pages)
 
     for lib in plan.get("libraries", []):
