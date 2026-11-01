@@ -72,6 +72,19 @@ class Loader:
                 log.error("%s failed: %s", what, e)
                 self.errors.append(f"{what}: {e}")
             return None
+        except OSError as e:
+            # e.g. a file missing from out/extract: record it and keep migrating the rest
+            log.error("%s failed: %s", what, e)
+            self.errors.append(f"{what}: {e}")
+            return None
+
+    @staticmethod
+    def _list_key(by_list: dict, list_id: str) -> str | None:
+        """The key of `list_id` in a dict keyed by SharePoint list ID, ignoring case
+        (lookup columns may reference a list GUID in a different case)."""
+        if list_id in by_list:
+            return list_id
+        return next((k for k in by_list if k.lower() == list_id.lower()), None)
 
     # ------------------------------------------------------------------ site
     def phase_site(self) -> None:
@@ -249,8 +262,8 @@ class Loader:
         for lp in self.plan["lists"]:
             src = defs.get(lp["listId"])
             for lk in lp["lookups"]:
-                tgt = defs.get(lk["targetListId"]) or next(
-                    (v for k, v in defs.items() if k.lower() == lk["targetListId"]), None)
+                tgt_key = self._list_key(defs, lk["targetListId"])
+                tgt = defs.get(tgt_key) if tgt_key else None
                 if not src or not tgt:
                     continue
                 if lk["multi"]:
@@ -266,7 +279,7 @@ class Loader:
                 })
                 if rel:
                     src.setdefault("relationships", {})[lk["field"]] = {
-                        "name": lk["relationshipName"], "type": rtype, "target": lk["targetListId"]}
+                        "name": lk["relationshipName"], "type": rtype, "target": tgt_key}
 
     def _object_views(self, definition_id: int, lp: dict) -> None:
         path = f"/o/object-admin/v1.0/object-definitions/{definition_id}/object-views"
@@ -334,7 +347,8 @@ class Loader:
                     rel = rels.get(lk["field"])
                     if not rel:
                         continue
-                    targets = [entries.get(rel["target"], {}).get(str(tid))
+                    target_key = self._list_key(defs, rel["target"]) or rel["target"]
+                    targets = [entries.get(self._list_key(entries, target_key) or target_key, {}).get(str(tid))
                                for tid in t.lookup_target_ids(item, lk["field"], lk["multi"])]
                     targets = [x for x in targets if x]
                     if rel["type"] == "manyToMany":
@@ -342,7 +356,8 @@ class Loader:
                             self._try("relate", self.lr.call, "PUT",
                                       f"{src['restContextPath']}/{src_id}/{rel['name']}/{tid}")
                     elif targets:
-                        field = rel_fields.get(rel["name"], f"r_{rel['name']}_c_{defs[rel['target']]['name'][:1].lower()}{defs[rel['target']]['name'][1:]}Id")
+                        tname = defs.get(target_key, {}).get("name", "")
+                        field = rel_fields.get(rel["name"], f"r_{rel['name']}_c_{tname[:1].lower()}{tname[1:]}Id")
                         self._try("relate", self.lr.call, "PATCH", f"{src['restContextPath']}/{src_id}",
                                   {field: targets[0]})
 
@@ -448,6 +463,9 @@ class Loader:
                     folders[f["erc"]] = res["id"]
             for d in lib["documents"]:
                 if d["erc"] in docs or d["folderErc"] not in folders:
+                    continue
+                if not Path(d["localPath"]).is_file():
+                    self.errors.append(f"document {d['fileName']}: local file {d['localPath']} is missing; re-run extract")
                     continue
                 document = {"externalReferenceCode": d["erc"], "title": d["title"]}
                 if use_type:

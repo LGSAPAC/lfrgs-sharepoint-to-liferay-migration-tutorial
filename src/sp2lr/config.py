@@ -78,6 +78,7 @@ def liferay_settings() -> LiferaySettings:
 
 def out_dir() -> Path:
     load_dotenv()
-    p = Path(os.environ.get("SP2LR_OUT", "./out"))
+    # Absolute, so the file paths recorded at extract time still resolve if load runs from elsewhere
+    p = Path(os.environ.get("SP2LR_OUT", "./out")).resolve()
     p.mkdir(parents=True, exist_ok=True)
     return p
